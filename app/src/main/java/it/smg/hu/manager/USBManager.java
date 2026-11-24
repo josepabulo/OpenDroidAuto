@@ -109,7 +109,7 @@ public class USBManager {
                 return;
             }
         }
-        if (ConnectionManager.instance().state() == ConnectionState.ERROR) {
+        if (isUsbErrorActive()) {
             // Preserve the visible error and RECUPERAR USB action until the user
             // explicitly triggers recovery or physically unplugs the cable.
             if (UsbAccessoryIds.isAoap(device.getVendorId(), device.getProductId())
@@ -187,11 +187,11 @@ public class USBManager {
             }
         }
         if (device == null) {
-            ConnectionManager.instance().failed(ctx_.getString(R.string.connection_usb_permission_device_error));
+            ConnectionManager.instance().failed("modeUSB", ctx_.getString(R.string.connection_usb_permission_device_error));
             return;
         }
         if (!granted) {
-            ConnectionManager.instance().failed(ctx_.getString(R.string.connection_usb_permission_denied));
+            ConnectionManager.instance().failed("modeUSB", ctx_.getString(R.string.connection_usb_permission_denied));
             return;
         }
         handleUsbAttached(device);
@@ -265,7 +265,7 @@ public class USBManager {
                 }
             }
             Log.e(TAG, "Unable to request USB permission", error);
-            ConnectionManager.instance().failed(ctx_.getString(R.string.connection_usb_permission_device_error));
+            ConnectionManager.instance().failed("modeUSB", ctx_.getString(R.string.connection_usb_permission_device_error));
         }
     }
 
@@ -309,7 +309,7 @@ public class USBManager {
             }
         } catch (Throwable error) {
             Log.e(TAG, "AOAP negotiation failed", error);
-            mainHandler_.post(() -> ConnectionManager.instance().failed(ctx_.getString(R.string.connection_usb_switch_error)));
+            mainHandler_.post(() -> ConnectionManager.instance().failed("modeUSB", ctx_.getString(R.string.connection_usb_switch_error)));
             return;
         }
         scheduleAoapScan(operationId, 0);
@@ -351,12 +351,12 @@ public class USBManager {
             }
             invalidateAoapOperationLocked();
         }
-        ConnectionManager.instance().failed(ctx_.getString(R.string.connection_usb_switch_error));
+        ConnectionManager.instance().failed("modeUSB", ctx_.getString(R.string.connection_usb_switch_error));
     }
 
     private void attachAoapDevice(UsbDevice device) {
         if (findDeviceById(device.getDeviceId()) == null) {
-            ConnectionManager.instance().failed(ctx_.getString(R.string.connection_usb_unavailable));
+            ConnectionManager.instance().failed("modeUSB", ctx_.getString(R.string.connection_usb_unavailable));
             return;
         }
         LibUsbDevice attachedDevice;
@@ -375,7 +375,7 @@ public class USBManager {
             if (attachedDevice != null) {
                 attachedDevice.close();
             }
-            ConnectionManager.instance().failed(ctx_.getString(R.string.connection_usb_switch_error));
+            ConnectionManager.instance().failed("modeUSB", ctx_.getString(R.string.connection_usb_switch_error));
             return;
         }
 
@@ -383,7 +383,7 @@ public class USBManager {
             usbDevice_ = attachedDevice;
             attachedDeviceId_ = device.getDeviceId();
         }
-        ConnectionManager.instance().transportAvailable("modeUSB", ctx_.getString(R.string.connection_usb_ready));
+        ConnectionManager.instance().usbReady(ctx_.getString(R.string.connection_usb_ready));
 
         Intent aoapDeviceIntent = new Intent(ctx_, UsbReceiver.class);
         aoapDeviceIntent.setAction(ATTACH_AOAP_DEVICE);
@@ -612,17 +612,22 @@ public class USBManager {
                 return;
             }
 
-            postIfRecoveryCurrent(operationId, () -> ConnectionManager.instance().failed(
+            postIfRecoveryCurrent(operationId, () -> ConnectionManager.instance().failed("modeUSB",
                     ctx_.getString(R.string.connection_usb_unavailable)));
         } catch (Throwable error) {
             Log.e(TAG, "USB recovery failed", error);
-            postIfRecoveryCurrent(operationId, () -> ConnectionManager.instance().failed(
+            postIfRecoveryCurrent(operationId, () -> ConnectionManager.instance().failed("modeUSB",
                     ctx_.getString(R.string.connection_usb_unavailable)));
         }
     }
 
     public LibUsbDevice aoapDevice(){
         return usbDevice_;
+    }
+
+    private static boolean isUsbErrorActive() {
+        ConnectionManager cm = ConnectionManager.instance();
+        return cm != null && cm.state() == ConnectionState.ERROR && "modeUSB".equals(cm.mode());
     }
 
     /** Recovers a missed attach broadcast without starting the Android Auto session. */
@@ -634,7 +639,7 @@ public class USBManager {
             }
             recordedLastDevice = lastDevice_;
         }
-        if (ConnectionManager.instance().state() == ConnectionState.ERROR) {
+        if (isUsbErrorActive()) {
             return false;
         }
         UsbDevice accessory = findPermittedAoapDevice();

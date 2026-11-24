@@ -55,6 +55,12 @@ public final class ConnectionManager {
         }
     }
 
+    public synchronized void usbReady(String message) {
+        if (policy_.usbReady()) {
+            publish(message);
+        }
+    }
+
     public synchronized void prepareRetry(String mode, String message) {
         if (policy_.prepareRetry(mode)) {
             publish(message);
@@ -105,6 +111,11 @@ public final class ConnectionManager {
 
     public synchronized void failed(String message) {
         policy_.failed();
+        publish(message);
+    }
+
+    public synchronized void failed(String mode, String message) {
+        policy_.failed(mode);
         publish(message);
     }
 

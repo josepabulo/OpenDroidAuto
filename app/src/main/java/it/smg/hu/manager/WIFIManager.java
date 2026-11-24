@@ -187,7 +187,7 @@ public class WIFIManager {
 
                 if (ipAddress_ == null && localIpAddress_ == null) {
                     if (!isUsbPriorityActive()) {
-                        ConnectionManager.instance().failed(ctx_.getString(R.string.connection_hotspot_gateway_error));
+                        ConnectionManager.instance().failed(ODAService.MODE_WIFI, ctx_.getString(R.string.connection_hotspot_gateway_error));
                     }
                     return;
                 }
@@ -273,7 +273,8 @@ public class WIFIManager {
                     || state == ConnectionState.AOAP_SWITCHING
                     || state == ConnectionState.CONNECTING
                     || state == ConnectionState.ACTIVE
-                    || state == ConnectionState.DISCONNECTING;
+                    || state == ConnectionState.DISCONNECTING
+                    || state == ConnectionState.ERROR;
         }
         return false;
     }

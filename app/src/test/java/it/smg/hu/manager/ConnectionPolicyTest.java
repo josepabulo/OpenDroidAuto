@@ -126,4 +126,87 @@ public class ConnectionPolicyTest {
         assertEquals("modeWifi", policy.mode());
         assertTrue(policy.isManualStartAllowed());
     }
+
+    @Test
+    public void usbPreemptsWifiErrorWithoutClearingUsbError() {
+        ConnectionPolicy policy = new ConnectionPolicy();
+        assertTrue(policy.transportAvailable("modeWifi"));
+        policy.connecting("modeWifi");
+        policy.failed();
+
+        assertFalse(policy.transportAvailable("modeWifi"));
+        assertEquals(ConnectionState.ERROR, policy.state());
+        assertEquals("modeWifi", policy.mode());
+
+        assertTrue(policy.transportAvailable("modeUSB"));
+        assertEquals(ConnectionState.IDLE, policy.state());
+        assertEquals("modeUSB", policy.mode());
+        assertTrue(policy.isManualStartAllowed());
+
+        policy.failed();
+        assertFalse(policy.transportAvailable("modeUSB"));
+        assertFalse(policy.transportAvailable("modeWifi"));
+        assertEquals(ConnectionState.ERROR, policy.state());
+        assertEquals("modeUSB", policy.mode());
+    }
+
+    @Test
+    public void usbReadyTransitionsPermissionPendingAndAoapSwitchingToIdle() {
+        ConnectionPolicy policy = new ConnectionPolicy();
+        policy.permissionPending();
+        assertEquals("modeUSB", policy.mode());
+        assertEquals(ConnectionState.PERMISSION_PENDING, policy.state());
+        assertFalse(policy.isManualStartAllowed());
+
+        assertTrue(policy.usbReady());
+        assertEquals(ConnectionState.IDLE, policy.state());
+        assertEquals("modeUSB", policy.mode());
+        assertTrue(policy.isManualStartAllowed());
+
+        policy.switchingToAoap();
+        assertEquals("modeUSB", policy.mode());
+        assertEquals(ConnectionState.AOAP_SWITCHING, policy.state());
+        assertFalse(policy.isManualStartAllowed());
+
+        assertTrue(policy.usbReady());
+        assertEquals(ConnectionState.IDLE, policy.state());
+        assertEquals("modeUSB", policy.mode());
+        assertTrue(policy.isManualStartAllowed());
+
+        policy.connecting("modeUSB");
+        assertFalse(policy.usbReady());
+        assertEquals(ConnectionState.CONNECTING, policy.state());
+
+        policy.active();
+        assertFalse(policy.usbReady());
+        assertEquals(ConnectionState.ACTIVE, policy.state());
+
+        policy.disconnecting();
+        assertFalse(policy.usbReady());
+        assertEquals(ConnectionState.DISCONNECTING, policy.state());
+    }
+
+    @Test
+    public void explicitModeFailureUpdatesModeAndRecoveryCompletesToIdle() {
+        ConnectionPolicy policy = new ConnectionPolicy();
+        assertTrue(policy.transportAvailable("modeWifi"));
+        policy.connecting("modeWifi");
+        policy.failed("modeWifi");
+        assertEquals(ConnectionState.ERROR, policy.state());
+        assertEquals("modeWifi", policy.mode());
+
+        policy.failed("modeUSB");
+        assertEquals(ConnectionState.ERROR, policy.state());
+        assertEquals("modeUSB", policy.mode());
+        assertFalse(policy.transportAvailable("modeWifi"));
+        assertFalse(policy.transportAvailable("modeUSB"));
+
+        policy.switchingToAoap();
+        assertEquals(ConnectionState.AOAP_SWITCHING, policy.state());
+        assertEquals("modeUSB", policy.mode());
+        assertTrue(policy.usbReady());
+        assertEquals(ConnectionState.IDLE, policy.state());
+        assertEquals("modeUSB", policy.mode());
+        assertTrue(policy.isManualStartAllowed());
+    }
 }
