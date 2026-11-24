@@ -50,8 +50,15 @@ public final class ConnectionManager {
 
 
     public synchronized void transportAvailable(String mode, String message) {
-        policy_.transportAvailable(mode);
-        publish(message);
+        if (policy_.transportAvailable(mode)) {
+            publish(message);
+        }
+    }
+
+    public synchronized void prepareRetry(String mode, String message) {
+        if (policy_.prepareRetry(mode)) {
+            publish(message);
+        }
     }
 
     public synchronized void permissionPending(String message) {

@@ -45,15 +45,40 @@ void TCPTransport::enqueueSend(SendQueue::iterator queueElement)
 void TCPTransport::stop()
 {
     if (Log::isDebug()) Log_d("stop tcp endpoint");
-    isStopping_ = true;
-    sendQueue_.clear();
-    receiveStrand_ = boost::none;
-    sendStrand_ = boost::none;
-    tcpEndpoint_->stop();
+    if (isStopping_.exchange(true)) {
+        return;
+    }
+
+    // Cancel pending socket async I/O first, then drain queues on their own strands
+    // without destroying the boost::optional strands while workers may still use them.
+    if (tcpEndpoint_) {
+        tcpEndpoint_->stop();
+    }
+
+    if (sendStrand_) {
+        sendStrand_->dispatch([this, self = this->shared_from_this()]() {
+            for (auto& element : sendQueue_) {
+                if (element.second) {
+                    element.second->reject(error::Error(error::ErrorCode::OPERATION_ABORTED));
+                }
+            }
+            sendQueue_.clear();
+        });
+    }
+
+    if (receiveStrand_) {
+        receiveStrand_->dispatch([this, self = this->shared_from_this()]() {
+            this->rejectReceivePromises(error::Error(error::ErrorCode::OPERATION_ABORTED));
+        });
+    }
 }
 
 void TCPTransport::sendHandler(SendQueue::iterator queueElement, const error::Error& e)
 {
+    if (isStopping_) {
+        return;
+    }
+
     if(!e)
     {
         queueElement->second->resolve();
@@ -65,7 +90,7 @@ void TCPTransport::sendHandler(SendQueue::iterator queueElement, const error::Er
 
     sendQueue_.erase(queueElement);
 
-    if(!sendQueue_.empty())
+    if(!sendQueue_.empty() && !isStopping_)
     {
         this->enqueueSend(sendQueue_.begin());
     }

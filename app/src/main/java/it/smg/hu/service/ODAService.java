@@ -113,6 +113,9 @@ public class ODAService extends Service implements IAndroidAutoEntityEventHandle
         currentMode_ = MODE_USB;
         stopRequested_ = false;
         errorQuit_ = false;
+        if (wifiManager_ != null) {
+            wifiManager_.setSessionActive(true);
+        }
         ConnectionManager.instance().connecting(MODE_USB, getString(R.string.connection_usb_connecting));
         startThread_ = new Thread(() -> {
             Looper.prepare();
@@ -123,10 +126,20 @@ public class ODAService extends Service implements IAndroidAutoEntityEventHandle
                     LibUsbDevice device = usbManager_.aoapDevice();
                     if (device.open()) {
                         if (Log.isInfo()) Log.i(TAG, "device opened");
+                        if (stopRequested_) {
+                            if (wifiManager_ != null) {
+                                wifiManager_.setSessionActive(false);
+                            }
+                            return;
+                        }
                         androidAutoEntity_ = AndroidAutoEntityFactory.create(this, device, surfaceView, keyHolder);
                         if (stopRequested_) {
+                            androidAutoEntity_.stop();
                             androidAutoEntity_.delete();
                             androidAutoEntity_ = null;
+                            if (wifiManager_ != null) {
+                                wifiManager_.setSessionActive(false);
+                            }
                             return;
                         }
                         androidAutoEntity_.start(this);
@@ -144,6 +157,9 @@ public class ODAService extends Service implements IAndroidAutoEntityEventHandle
                     return;
                 }
             } else {
+                if (wifiManager_ != null) {
+                    wifiManager_.setSessionActive(false);
+                }
                 ConnectionManager.instance().failed(getString(R.string.connection_usb_unavailable));
             }
             if (Log.isInfo()) Log.i(TAG, "start usb thead completed");
@@ -162,31 +178,109 @@ public class ODAService extends Service implements IAndroidAutoEntityEventHandle
         startThread_ = new Thread(() -> {
             Looper.prepare();
 
-            String ipAddress = wifiManager_.getIpAddress();
+            int acceptedFd = wifiManager_ != null ? wifiManager_.consumeAcceptedSocketFd() : -1;
+            String ipAddress = wifiManager_ != null ? wifiManager_.getIpAddress() : null;
+            boolean wasIncomingSocket = acceptedFd >= 0;
+            String endpointLabel = ipAddress;
+            TCPEndpoint tcpEndpoint = null;
+            AndroidAutoEntity builtEntity = null;
             try {
-                if (ipAddress != null) {
-//                    if (Log.isInfo()) Log.i(TAG, "Connect to ip " + ipAddress);
-                    TCPEndpoint tcpEndpoint = new TCPEndpoint(ipAddress);
-                    androidAutoEntity_ = AndroidAutoEntityFactory.create(this, tcpEndpoint, surfaceView, keyHolder);
+                if (wasIncomingSocket) {
+                    if (wifiManager_ != null) {
+                        wifiManager_.setSessionActive(true);
+                    }
+                    String localIp = wifiManager_ != null ? wifiManager_.getLocalIpAddress() : null;
+                    int port = wifiManager_ != null ? wifiManager_.getServerPort() : WIFIManager.DEFAULT_SERVER_PORT;
+                    endpointLabel = (localIp != null ? localIp : "0.0.0.0") + ":" + port;
                     if (stopRequested_) {
-                        androidAutoEntity_.delete();
-                        androidAutoEntity_ = null;
+                        TCPEndpoint.closeFd(acceptedFd);
+                        if (wifiManager_ != null) {
+                            wifiManager_.setSessionActive(false);
+                        }
                         return;
                     }
-                    androidAutoEntity_.start(this);
-                    isRunning_ = true;
-                    ConnectionManager.instance().active(getString(R.string.connection_wifi_active));
+                    tcpEndpoint = new TCPEndpoint(acceptedFd);
+                    acceptedFd = -1;
+                    builtEntity = AndroidAutoEntityFactory.create(this, tcpEndpoint, surfaceView, keyHolder);
+                } else if (ipAddress != null) {
+                    if (stopRequested_) {
+                        return;
+                    }
+                    try {
+                        tcpEndpoint = new TCPEndpoint(ipAddress);
+                        builtEntity = AndroidAutoEntityFactory.create(this, tcpEndpoint, surfaceView, keyHolder);
+                    } catch (TCPConnectException outboundEx) {
+                        // While outbound :5277 timed out or was refused, WAA BT RFCOMM may have brought
+                        // in a direct connection on :5288; seamlessly adopt it before failing.
+                        int lateFd = (!stopRequested_ && wifiManager_ != null)
+                                ? wifiManager_.consumeAcceptedSocketFd() : -1;
+                        if (lateFd < 0) {
+                            throw outboundEx;
+                        }
+                        wasIncomingSocket = true;
+                        acceptedFd = lateFd;
+                        if (wifiManager_ != null) {
+                            wifiManager_.setSessionActive(true);
+                        }
+                        String localIp = wifiManager_.getLocalIpAddress();
+                        endpointLabel = (localIp != null ? localIp : "0.0.0.0") + ":" + wifiManager_.getServerPort();
+                        tcpEndpoint = new TCPEndpoint(acceptedFd);
+                        acceptedFd = -1;
+                        builtEntity = AndroidAutoEntityFactory.create(this, tcpEndpoint, surfaceView, keyHolder);
+                    }
                 } else {
+                    if (wifiManager_ != null) {
+                        wifiManager_.setSessionActive(false);
+                    }
                     ConnectionManager.instance().failed(getString(R.string.connection_wifi_gateway_error));
+                    stop();
+                    return;
                 }
+
+                if (stopRequested_) {
+                    builtEntity.stop();
+                    builtEntity.delete();
+                    if (wifiManager_ != null) {
+                        wifiManager_.setSessionActive(false);
+                    }
+                    return;
+                }
+
+                androidAutoEntity_ = builtEntity;
+                if (wifiManager_ != null) {
+                    wifiManager_.setSessionActive(true);
+                    int staleFd = wifiManager_.consumeAcceptedSocketFd();
+                    if (staleFd >= 0) {
+                        TCPEndpoint.closeFd(staleFd);
+                    }
+                }
+                androidAutoEntity_.start(this);
+                isRunning_ = true;
+                ConnectionManager.instance().active(getString(R.string.connection_wifi_active));
                 if (Log.isInfo()) Log.i(TAG, "start wifi thead completed");
-            } catch (TCPConnectException e){
-                Log.e(TAG, "TCP Connection error", e);
-                // The phone refuses port 5277 unless Android Auto Wireless is
-                // actually running on it. Say so on screen: the projection window
-                // closes within a second either way, which otherwise looks
-                // exactly like the app crashing.
-                String reason = getString(R.string.connection_wifi_endpoint_error, ipAddress);
+            } catch (Exception e){
+                Log.e(TAG, "Wi-Fi connection error", e);
+                if (acceptedFd >= 0) {
+                    TCPEndpoint.closeFd(acceptedFd);
+                }
+                if (builtEntity != null) {
+                    try {
+                        builtEntity.stop();
+                    } catch (Throwable ignored) {}
+                    try {
+                        builtEntity.delete();
+                    } catch (Throwable ignored) {}
+                    androidAutoEntity_ = null;
+                } else if (tcpEndpoint != null) {
+                    tcpEndpoint.delete();
+                }
+                if (wifiManager_ != null) {
+                    wifiManager_.setSessionActive(false);
+                }
+                String target = endpointLabel != null ? endpointLabel : "";
+                String reason = wasIncomingSocket
+                        ? getString(R.string.connection_wifi_incoming_error, target)
+                        : getString(R.string.connection_wifi_endpoint_error, target);
                 ConnectionManager.instance().failed(reason);
                 notifyUser(reason);
                 stop();
@@ -269,6 +363,9 @@ public class ODAService extends Service implements IAndroidAutoEntityEventHandle
                     ? usbManager_.aoapDevice() : null;
             if (!isRunning_ && androidAutoEntity_ == null) {
                 if (Log.isInfo()) Log.i(TAG, "service not running, already stopped?");
+                if (wifiManager_ != null) {
+                    wifiManager_.setSessionActive(false);
+                }
                 if (sessionUsbDevice != null) {
                     usbManager_.finishSession(sessionUsbDevice, errorQuit_);
                 }
@@ -319,6 +416,9 @@ public class ODAService extends Service implements IAndroidAutoEntityEventHandle
 
             if (sessionUsbDevice != null) {
                 usbManager_.finishSession(sessionUsbDevice, errorQuit_);
+            }
+            if (wifiManager_ != null) {
+                wifiManager_.setSessionActive(false);
             }
 
             Intent stopIntent = new Intent(ODAService.STOP_ACTION);
