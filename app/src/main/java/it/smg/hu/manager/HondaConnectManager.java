@@ -122,14 +122,16 @@ public class HondaConnectManager {
     private final Object focusLock_ = new Object();
     private final Object callbackLock_ = new Object();
     private final Object micLock_ = new Object();
+    private final Object heartbeatLock_ = new Object();
+    private volatile boolean inForeground_;
     private volatile CountDownLatch waitCondOn_;
     private volatile CountDownLatch waitCondOff_;
 
     private final ExecutorService modeMgrExecutor_;
     private ScheduledExecutorService heartbeatExecutor_;
     private ScheduledFuture<?> heartbeatFuture_;
-    private int currentModeState_;
-    private int currentIdx_;
+    private volatile int currentModeState_;
+    private volatile int currentIdx_;
 
     private final Handler mainHandler_;
     private ISensor.Listener dayNightListener_;
@@ -279,11 +281,11 @@ public class HondaConnectManager {
         // so native aasdk io_service workers never block and rapid start/suspend transitions stay ordered.
         if (isPreinstall() && modeMgrManager_ != null) {
             runOnModeMgrExecutor(() -> {
-                if (!isRunning_ || hasAudioFocus_ || modeMgrManager_ == null) {
+                if (!isRunning_ || !inForeground_ || hasAudioFocus_ || modeMgrManager_ == null) {
                     return;
                 }
                 requestFocus(settings_.advanced.modeMgrAudioVideoIdx(), ModeMgrMode.REQUEST_BOTH);
-                if (!isRunning_) {
+                if (!isRunning_ || !inForeground_) {
                     return;
                 }
 
@@ -335,6 +337,9 @@ public class HondaConnectManager {
         // If AUTH_TYPE <> preinstall the app has already audio focus
         if (isPreinstall() && modeMgrManager_ != null) {
             synchronized (focusLock_) {
+                if (!isRunning_) {
+                    return;
+                }
                 if (idx == currentIdx_ && mode == currentModeState_){
                     if (Log.isWarn()) Log.w(TAG, "idx == currentIdx && mode == currentModeState -> do nothing");
                     return;
@@ -422,6 +427,7 @@ public class HondaConnectManager {
     // Used in onResume
     public void initAudioBinding(){
         if (Log.isDebug()) Log.d(TAG, "initAudioBinding -> app with auth " + authType());
+        inForeground_ = true;
         // if app has THIRD_PARTY auth will have exclusive audio focus, only bind wheel service
         if (isPreinstall()){
             if (Log.isDebug()) Log.d(TAG, "initAudioBinding -> app auth = preinstall -> register ModeMgr and SW callback");
@@ -450,6 +456,7 @@ public class HondaConnectManager {
     // Used in onPause (app in background)
     public void sendToBackground(){
         if (Log.isDebug()) Log.d(TAG, "sendToBackground -> app with auth " + authType() + " unregister SW callback");
+        inForeground_ = false;
         unregisterSteeringMenuCallback();
         unregisterModeMgrSWCallbacks();
         notifySteeringMenuDispMode(0);
@@ -458,6 +465,7 @@ public class HondaConnectManager {
     public void endAudioBinding(){
         if (Log.isDebug()) Log.d(TAG, "endAudioBinding -> app with auth " + authType());
 
+        inForeground_ = false;
         isRunning_ = false;
         restoreActivity_ = false;
         stopMicSessionInternal();
@@ -477,6 +485,10 @@ public class HondaConnectManager {
 
             unregisterModeMgrCallback();
             unregisterStateMgrCallback();
+            stopHeartbeat();
+            currentModeState_ = 0;
+            currentIdx_ = 255;
+            hasAudioFocus_ = false;
 
             if (settings_.advanced.hondaImidEnabled() && modeMgrManager_ != null) {
                 try {
@@ -744,21 +756,23 @@ public class HondaConnectManager {
                     if (Log.isWarn()) Log.w(TAG, "stopMicSession bluetoothVR_ null");
                 }
             } else {
-                try {
-                    ret = EcNcServiceNative.endVr(true);
-                    if (Log.isDebug()) {
-                        Log.d(TAG, "ecNcServiceIface_ endVr ret= " + ret);
-                        printToast("ecNcServiceIface_ endVr ret= " + ret);
-                    }
+                if (micVrStarted_) {
+                    try {
+                        ret = EcNcServiceNative.endVr(true);
+                        if (Log.isDebug()) {
+                            Log.d(TAG, "ecNcServiceIface_ endVr ret= " + ret);
+                            printToast("ecNcServiceIface_ endVr ret= " + ret);
+                        }
 
-                    ret = EcNcServiceNative.driverClose();
-                    if (Log.isDebug()) {
-                        Log.d(TAG, "ecNcServiceIface_ driverClose ret= " + ret);
-                        printToast("ecNcServiceIface_ driverClose ret= " + ret);
-                    }
+                        ret = EcNcServiceNative.driverClose();
+                        if (Log.isDebug()) {
+                            Log.d(TAG, "ecNcServiceIface_ driverClose ret= " + ret);
+                            printToast("ecNcServiceIface_ driverClose ret= " + ret);
+                        }
 
-                } catch (Exception e) {
-                    Log.e(TAG, "startVR exception", e);
+                    } catch (Exception e) {
+                        Log.e(TAG, "startVR exception", e);
+                    }
                     micVrStarted_ = false;
                 }
 
@@ -767,7 +781,6 @@ public class HondaConnectManager {
                     releaseFocus(settings_.advanced.modeMgrVideoIdx(), ModeMgrMode.REQUEST_AUDIO);
                 }
                 hasAudioFocusForMic_ = false;
-                micVrStarted_ = false;
             }
         }
     }
@@ -811,17 +824,21 @@ public class HondaConnectManager {
     private void registerModeMgrCallback(){
         if (Log.isDebug()) Log.d(TAG, "registerModeMgrCallback");
         if (modeMgrManager_ != null) {
-            int idx = settings_.advanced.modeMgrAudioVideoIdx();
-            if (Log.isDebug()) Log.d(TAG, "registerModeMgrCallback idx " + idx);
-            modeMgrServiceAudioVideoCallBack_ = new ModeMgrServiceVideoAudioCallBack();
-            int ret = modeMgrManager_.registerModeMgrCallback(idx, modeMgrServiceAudioVideoCallBack_);
-            if (Log.isDebug()) Log.d(TAG, "registerModeMgrCallback ret " + ret);
+            if (modeMgrServiceAudioVideoCallBack_ == null) {
+                int idx = settings_.advanced.modeMgrAudioVideoIdx();
+                if (Log.isDebug()) Log.d(TAG, "registerModeMgrCallback idx " + idx);
+                modeMgrServiceAudioVideoCallBack_ = new ModeMgrServiceVideoAudioCallBack();
+                int ret = modeMgrManager_.registerModeMgrCallback(idx, modeMgrServiceAudioVideoCallBack_);
+                if (Log.isDebug()) Log.d(TAG, "registerModeMgrCallback ret " + ret);
+            }
 
-            idx = settings_.advanced.modeMgrVideoIdx();
-            if (Log.isDebug()) Log.d(TAG, "registerModeMgrCallback idx " + idx);
-            modeMgrServiceVideoCallBack_ = new ModeMgrServiceVideoCallBack();
-            ret = modeMgrManager_.registerModeMgrCallback(idx, modeMgrServiceVideoCallBack_);
-            if (Log.isDebug()) Log.d(TAG, "registerModeMgrCallback ret " + ret);
+            if (modeMgrServiceVideoCallBack_ == null) {
+                int idx = settings_.advanced.modeMgrVideoIdx();
+                if (Log.isDebug()) Log.d(TAG, "registerModeMgrCallback idx " + idx);
+                modeMgrServiceVideoCallBack_ = new ModeMgrServiceVideoCallBack();
+                int ret = modeMgrManager_.registerModeMgrCallback(idx, modeMgrServiceVideoCallBack_);
+                if (Log.isDebug()) Log.d(TAG, "registerModeMgrCallback ret " + ret);
+            }
         } else {
             Log.w(TAG, "modeMgrManager_ null -> do nothing");
         }
@@ -838,10 +855,12 @@ public class HondaConnectManager {
     private void registerStateMgrCallback() {
         if (Log.isDebug()) Log.d(TAG, "registerStateMgrCallback");
         if (stateMgrManager_ != null){
-            StateMgrChangeInfo changeInfo = createStateMgrChangeInfo();
-            stateMgrServiceCallBack_ = new StateMgrServiceCallBack();
-            int ret = stateMgrManager_.registCallBack(stateMgrServiceCallBack_, changeInfo);
-            if (Log.isDebug()) Log.d(TAG, "registerStateMgrCallback ret " + ret);
+            if (stateMgrServiceCallBack_ == null) {
+                StateMgrChangeInfo changeInfo = createStateMgrChangeInfo();
+                stateMgrServiceCallBack_ = new StateMgrServiceCallBack();
+                int ret = stateMgrManager_.registCallBack(stateMgrServiceCallBack_, changeInfo);
+                if (Log.isDebug()) Log.d(TAG, "registerStateMgrCallback ret " + ret);
+            }
         } else {
             Log.w(TAG, "stateMgrManager_ null -> do nothing");
         }
@@ -946,38 +965,42 @@ public class HondaConnectManager {
     }
 
     private void startHeartbeat() {
-        if (Log.isDebug()) Log.d(TAG, "startHeartbeat currentModeState_ " + currentModeState_);
+        synchronized (heartbeatLock_) {
+            if (Log.isDebug()) Log.d(TAG, "startHeartbeat currentModeState_ " + currentModeState_);
 
-        if (currentModeState_ == 0) {
-            if (Log.isDebug()) Log.d(TAG, "startHeartbeat currentState 0 -> stop heartbeat");
-            stopHeartbeat();
-            return;
+            if (!isRunning_ || currentModeState_ == 0) {
+                if (Log.isDebug()) Log.d(TAG, "startHeartbeat currentState 0 or stopped -> stop heartbeat");
+                stopHeartbeat();
+                return;
+            }
+
+            heartbeat();
+
+            if (heartbeatExecutor_ != null){
+                if (Log.isDebug()) Log.d(TAG, "startHeartbeat heartbeat already running -> do nothing");
+                return;
+            }
+
+            heartbeatExecutor_ = Executors.newSingleThreadScheduledExecutor();
+
+            heartbeatFuture_ = heartbeatExecutor_.scheduleWithFixedDelay(this::heartbeat, HEARTBEAT_INTERVAL_MS, HEARTBEAT_INTERVAL_MS, TimeUnit.MILLISECONDS);
         }
-
-        heartbeat();
-
-        if (heartbeatExecutor_ != null){
-            if (Log.isDebug()) Log.d(TAG, "startHeartbeat heartbeat already running -> do nothing");
-            return;
-        }
-
-        heartbeatExecutor_ = Executors.newSingleThreadScheduledExecutor();
-
-        heartbeatFuture_ = heartbeatExecutor_.scheduleWithFixedDelay(this::heartbeat, HEARTBEAT_INTERVAL_MS, HEARTBEAT_INTERVAL_MS, TimeUnit.MILLISECONDS);
     }
 
     private void stopHeartbeat() {
-        if (Log.isDebug()) Log.d(TAG, "stopHeartbeat currentModeState_ " + currentModeState_);
+        synchronized (heartbeatLock_) {
+            if (Log.isDebug()) Log.d(TAG, "stopHeartbeat currentModeState_ " + currentModeState_);
 
-        if (heartbeatFuture_ != null) {
-            if (Log.isDebug()) Log.d(TAG, "stopHeartbeat cancel future");
-            heartbeatFuture_.cancel(false);
-            heartbeatFuture_ = null;
-        }
-        if (heartbeatExecutor_ != null) {
-            if (Log.isDebug()) Log.d(TAG, "stopHeartbeat shutdown executor");
-            heartbeatExecutor_.shutdownNow();
-            heartbeatExecutor_ = null;
+            if (heartbeatFuture_ != null) {
+                if (Log.isDebug()) Log.d(TAG, "stopHeartbeat cancel future");
+                heartbeatFuture_.cancel(false);
+                heartbeatFuture_ = null;
+            }
+            if (heartbeatExecutor_ != null) {
+                if (Log.isDebug()) Log.d(TAG, "stopHeartbeat shutdown executor");
+                heartbeatExecutor_.shutdownNow();
+                heartbeatExecutor_ = null;
+            }
         }
     }
 

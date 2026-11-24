@@ -100,4 +100,10 @@ public class WirelessAutoTriggerTest {
         int leIp = (192) | (168 << 8) | (43 << 16) | (100 << 24);
         assertEquals("192.168.43.100", WirelessAutoTrigger.formatIpv4Address(leIp));
     }
+
+    @Test
+    public void normalizeBssidHandlesNullAndLowercase() {
+        assertEquals("", WirelessAutoTrigger.normalizeBssid(null));
+        assertEquals("AA:BB:CC:DD:EE:FF", WirelessAutoTrigger.normalizeBssid(" aa:bb:cc:dd:ee:ff "));
+    }
 }

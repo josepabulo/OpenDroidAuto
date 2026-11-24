@@ -573,15 +573,19 @@ public class USBManager {
                     try {
                         if (resetDevice.open()) {
                             resetDevice.reset();
-                            resetDevice.close();
                         }
                     } catch (Throwable error) {
                         Log.w(TAG, "USB recovery reset failed: " + error);
+                    } finally {
+                        try {
+                            resetDevice.close();
+                        } catch (Throwable ignored) {
+                        }
                     }
                 }
 
-                for (int poll = 0; poll < 3; poll++) {
-                    SystemClock.sleep(400L);
+                for (int poll = 0; poll < UsbRetryPolicy.REENUMERATION_ATTEMPTS; poll++) {
+                    SystemClock.sleep(UsbRetryPolicy.reenumerationDelayMs(poll));
                     if (!isRecoveryOperationCurrent(operationId)) {
                         return;
                     }

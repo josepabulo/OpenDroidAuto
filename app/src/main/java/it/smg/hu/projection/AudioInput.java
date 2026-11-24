@@ -6,6 +6,7 @@ import android.media.AudioRecord;
 import androidx.annotation.Keep;
 
 import java.nio.ByteBuffer;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import it.smg.hu.config.Settings;
 import it.smg.hu.manager.HondaConnectManager;
@@ -16,6 +17,7 @@ public class AudioInput extends it.smg.libs.aasdk.projection.AudioInput {
     private static final String TAG = "AudioInput";
 
     private final Settings settings_;
+    private final ReentrantReadWriteLock recordLock_ = new ReentrantReadWriteLock();
 
     private volatile AudioRecord audioRecord_;
     private volatile boolean isActive_;
@@ -76,28 +78,32 @@ public class AudioInput extends it.smg.libs.aasdk.projection.AudioInput {
     @Keep
     @Override
     public int read(ByteBuffer buffer) {
-        AudioRecord record = audioRecord_;
-        if (record == null || !isActive_) {
-            return 0;
-        }
-
         int bytesToRead = buffer.remaining();
         if (bytesToRead <= 0) {
             return 0;
         }
 
+        recordLock_.readLock().lock();
         try {
-            int read = record.read(buffer, bytesToRead);
-            if (read < 0 && !isActive_) {
-                return 0;
+            AudioRecord record = audioRecord_;
+            if (record == null || !isActive_) {
+                return -1;
             }
-            return read;
-        } catch (IllegalStateException e) {
-            if (!isActive_) {
-                return 0;
+
+            try {
+                int read = record.read(buffer, bytesToRead);
+                if (read < 0 || !isActive_) {
+                    return -1;
+                }
+                return read;
+            } catch (IllegalStateException e) {
+                if (isActive_) {
+                    Log.e(TAG, "AudioRecord read failed", e);
+                }
+                return -1;
             }
-            Log.e(TAG, "AudioRecord read failed", e);
-            return -1;
+        } finally {
+            recordLock_.readLock().unlock();
         }
     }
 
@@ -108,7 +114,13 @@ public class AudioInput extends it.smg.libs.aasdk.projection.AudioInput {
             stop();
         }
 
-        AudioRecord record = new AudioRecord(sourceType_, sampleRate_, channels2num(channelConfig_), sampleSizeFromInt(sampleSize_), bufferSize_ * 4);
+        final AudioRecord record;
+        try {
+            record = new AudioRecord(sourceType_, sampleRate_, channels2num(channelConfig_), sampleSizeFromInt(sampleSize_), bufferSize_ * 4);
+        } catch (IllegalArgumentException e) {
+            Log.e(TAG, "Invalid AudioRecord configuration", e);
+            return false;
+        }
 
         HondaConnectManager hondaManager = hondaManager();
         if (hondaManager != null) {
@@ -156,8 +168,13 @@ public class AudioInput extends it.smg.libs.aasdk.projection.AudioInput {
             return false;
         }
 
-        audioRecord_ = record;
-        isActive_ = true;
+        recordLock_.writeLock().lock();
+        try {
+            audioRecord_ = record;
+            isActive_ = true;
+        } finally {
+            recordLock_.writeLock().unlock();
+        }
         return true;
     }
 
@@ -169,7 +186,6 @@ public class AudioInput extends it.smg.libs.aasdk.projection.AudioInput {
         boolean wasActive = isActive_;
         isActive_ = false;
         AudioRecord record = audioRecord_;
-        audioRecord_ = null;
 
         if (record != null) {
             if (Log.isDebug()) Log.d(TAG, "stop audioRecord");
@@ -178,13 +194,23 @@ public class AudioInput extends it.smg.libs.aasdk.projection.AudioInput {
             } catch (IllegalStateException e) {
                 Log.e(TAG, "stop audioRecord error", e);
             }
+        }
 
-            if (Log.isDebug()) Log.d(TAG, "release audioRecord");
-            try {
-                record.release();
-            } catch (Throwable e) {
-                Log.e(TAG, "release audioRecord error", e);
+        // Release only after any in-flight read() exits so API 15 libmedia never frees native buffers mid-read.
+        recordLock_.writeLock().lock();
+        try {
+            record = audioRecord_;
+            audioRecord_ = null;
+            if (record != null) {
+                if (Log.isDebug()) Log.d(TAG, "release audioRecord");
+                try {
+                    record.release();
+                } catch (Throwable e) {
+                    Log.e(TAG, "release audioRecord error", e);
+                }
             }
+        } finally {
+            recordLock_.writeLock().unlock();
         }
 
         if (wasActive) {

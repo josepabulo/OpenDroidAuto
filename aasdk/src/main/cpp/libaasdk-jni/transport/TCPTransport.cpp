@@ -15,6 +15,10 @@ TCPTransport::TCPTransport(aasdk::io::ioService& ioService, tcp::ITCPEndpoint::P
 
 void TCPTransport::enqueueReceive(common::DataBuffer buffer)
 {
+    if (isStopping_) {
+        this->rejectReceivePromises(error::Error(error::ErrorCode::OPERATION_ABORTED));
+        return;
+    }
     if (Log::isVerbose()) Log_v("enqueueReceive");
     auto receivePromise = tcp::ITCPEndpoint::Promise::defer(receiveStrand_, "TCPTransport_enqueueReceive");
     receivePromise->then([this, self = this->shared_from_this()](auto bytesTransferred) {
@@ -29,17 +33,27 @@ void TCPTransport::enqueueReceive(common::DataBuffer buffer)
 
 void TCPTransport::enqueueSend(SendQueue::iterator queueElement)
 {
-    auto sendPromise = tcp::ITCPEndpoint::Promise::defer(sendStrand_, "TCPTransport_enqueueSend");
+    if (isStopping_) {
+        auto promise = std::move(queueElement->second);
+        sendQueue_.erase(queueElement);
+        if (promise) {
+            promise->reject(error::Error(error::ErrorCode::OPERATION_ABORTED));
+        }
+        return;
+    }
 
-    sendPromise->then([this, self = this->shared_from_this(), queueElement](auto) {
+    auto sendPromise = tcp::ITCPEndpoint::Promise::defer(sendStrand_, "TCPTransport_enqueueSend");
+    auto payload = std::make_shared<common::Data>(queueElement->first);
+
+    sendPromise->then([this, self = this->shared_from_this(), queueElement, payload](auto) {
         this->sendHandler(queueElement, error::Error());
     },
-    [this, self = this->shared_from_this(), queueElement](auto e) {
+    [this, self = this->shared_from_this(), queueElement, payload](auto e) {
         this->sendHandler(queueElement, e);
     });
 
 	if (Log::isDebug()) Log_d("send to tcpendpoint");
-    tcpEndpoint_->send(common::DataConstBuffer(queueElement->first), std::move(sendPromise));
+    tcpEndpoint_->send(common::DataConstBuffer(*payload), std::move(sendPromise));
 }
 
 void TCPTransport::stop()
@@ -49,14 +63,13 @@ void TCPTransport::stop()
         return;
     }
 
-    // Cancel pending socket async I/O first, then drain queues on their own strands
-    // without destroying the boost::optional strands while workers may still use them.
-    if (tcpEndpoint_) {
-        tcpEndpoint_->stop();
-    }
-
+    // Close the socket on sendStrand_ so it serializes with async_write startup and
+    // drain queues without freeing payload buffers captured by in-flight promises.
     if (sendStrand_) {
         sendStrand_->dispatch([this, self = this->shared_from_this()]() {
+            if (tcpEndpoint_) {
+                tcpEndpoint_->stop();
+            }
             for (auto& element : sendQueue_) {
                 if (element.second) {
                     element.second->reject(error::Error(error::ErrorCode::OPERATION_ABORTED));
@@ -64,6 +77,8 @@ void TCPTransport::stop()
             }
             sendQueue_.clear();
         });
+    } else if (tcpEndpoint_) {
+        tcpEndpoint_->stop();
     }
 
     if (receiveStrand_) {

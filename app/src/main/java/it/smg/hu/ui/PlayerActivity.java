@@ -85,12 +85,20 @@ public class PlayerActivity extends Activity implements ServiceConnection, Surfa
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
-        if (startMode_ == null) {
-            Bundle b = intent != null ? intent.getExtras() : null;
-            startMode_ = b != null ? b.getString("mode") : null;
-            if (startMode_ == null) {
-                startMode_ = ConnectionManager.instance().mode();
+        Bundle b = intent != null ? intent.getExtras() : null;
+        String requestedMode = b != null ? b.getString("mode") : null;
+        if (requestedMode != null) {
+            startMode_ = requestedMode;
+            isRunning_ = false;
+            pendingGainFocus_ = false;
+            pendingStart_ = false;
+            HondaConnectManager hondaManager = hondaManager();
+            if (hondaManager != null) {
+                hondaManager.initialize();
             }
+            if (Log.isDebug()) Log.d(TAG, "onNewIntent starting mode: " + startMode_);
+        } else if (startMode_ == null) {
+            startMode_ = ConnectionManager.instance().mode();
             if (Log.isDebug()) Log.d(TAG, "onNewIntent resolved startMode_: " + startMode_);
         }
     }

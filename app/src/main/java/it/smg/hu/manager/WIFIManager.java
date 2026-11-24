@@ -57,6 +57,7 @@ public class WIFIManager {
     private WIFIManager(Context ctx){
         ctx_ = ctx;
         localBroadcastManager_ = LocalBroadcastManager.getInstance(ctx_);
+        WirelessAutoTrigger.warmUpBluetoothAdapter();
     }
 
     public static void init(Context ctx){

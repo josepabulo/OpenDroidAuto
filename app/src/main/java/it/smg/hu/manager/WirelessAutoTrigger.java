@@ -5,10 +5,10 @@ import android.bluetooth.BluetoothClass;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothServerSocket;
 import android.bluetooth.BluetoothSocket;
+import android.os.Looper;
 import android.os.SystemClock;
 
 import java.io.ByteArrayOutputStream;
-import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -17,7 +17,9 @@ import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -51,15 +53,44 @@ public class WirelessAutoTrigger {
     private static final int[] RETRY_DELAYS_MS = {0, 3000, 6000};
     private static final Charset UTF_8 = Charset.forName("UTF-8");
 
+    private static volatile BluetoothAdapter cachedAdapter_;
+
     private final AtomicInteger generation_ = new AtomicInteger(0);
     private final Object socketLock_ = new Object();
     private BluetoothServerSocket rfcommServerSocket_;
-    private BluetoothSocket activeRfcommSocket_;
+    private final Set<BluetoothSocket> activeRfcommSockets_ = new HashSet<>();
+
+    /** Must be warmed on a Looper thread because API 15 BluetoothAdapter creates an internal Handler. */
+    public static void warmUpBluetoothAdapter() {
+        try {
+            BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter();
+            if (adapter != null) {
+                cachedAdapter_ = adapter;
+            }
+        } catch (Throwable t) {
+            if (Log.isDebug()) Log.d(TAG, "BluetoothAdapter warm-up unavailable: " + t.getMessage());
+        }
+    }
+
+    private static BluetoothAdapter getBluetoothAdapterSafe() {
+        BluetoothAdapter cached = cachedAdapter_;
+        if (cached != null) {
+            return cached;
+        }
+        if (Looper.myLooper() == null) {
+            return null;
+        }
+        warmUpBluetoothAdapter();
+        return cachedAdapter_;
+    }
 
     public void trigger(final String localIp, final int serverPort, final String gatewayIp,
                         final String ssid, final String bssid) {
         if (localIp == null || localIp.trim().isEmpty() || serverPort <= 0 || serverPort > 65535) {
             return;
+        }
+        if (Looper.myLooper() != null) {
+            warmUpBluetoothAdapter();
         }
 
         final int gen = generation_.incrementAndGet();
@@ -70,7 +101,8 @@ public class WirelessAutoTrigger {
                 buildWifiStartRequestPayload(localIp, serverPort));
         final byte[] infoResponseFrame = (cleanSsid != null && !cleanSsid.isEmpty())
                 ? wrapRfcommFrame(MSG_WIFI_INFO_RESPONSE,
-                        buildWifiInfoResponsePayload(cleanSsid, "", bssid, SECURITY_WPA2_PERSONAL, AP_TYPE_STATIC))
+                        buildWifiInfoResponsePayload(cleanSsid, "", normalizeBssid(bssid),
+                                SECURITY_WPA2_PERSONAL, AP_TYPE_STATIC))
                 : null;
 
         startRfcommServer(gen, startFrame, infoResponseFrame);
@@ -105,7 +137,7 @@ public class WirelessAutoTrigger {
 
     private void startRfcommServer(final int gen, final byte[] startFrame, final byte[] infoResponseFrame) {
         Thread serverThread = new Thread(() -> {
-            BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter();
+            BluetoothAdapter adapter = getBluetoothAdapterSafe();
             if (adapter == null || !isAdapterEnabled(adapter)) {
                 return;
             }
@@ -130,7 +162,7 @@ public class WirelessAutoTrigger {
                                 closeQuietly(client);
                                 break;
                             }
-                            activeRfcommSocket_ = client;
+                            activeRfcommSockets_.add(client);
                         }
                         exchangeWaaControlFrames(gen, client, startFrame, infoResponseFrame);
                     } catch (Throwable t) {
@@ -143,9 +175,7 @@ public class WirelessAutoTrigger {
                         SystemClock.sleep(250);
                     } finally {
                         synchronized (socketLock_) {
-                            if (activeRfcommSocket_ == client) {
-                                activeRfcommSocket_ = null;
-                            }
+                            activeRfcommSockets_.remove(client);
                         }
                         closeQuietly(client);
                     }
@@ -168,7 +198,7 @@ public class WirelessAutoTrigger {
     }
 
     private boolean tryRfcommClientTrigger(int gen, byte[] startFrame, byte[] infoResponseFrame) {
-        BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter();
+        BluetoothAdapter adapter = getBluetoothAdapterSafe();
         if (adapter == null || !isAdapterEnabled(adapter)) {
             return false;
         }
@@ -212,7 +242,7 @@ public class WirelessAutoTrigger {
                     closeQuietly(socket);
                     return false;
                 }
-                activeRfcommSocket_ = socket;
+                activeRfcommSockets_.add(socket);
             }
             socket.connect();
             return exchangeWaaControlFrames(gen, socket, startFrame, infoResponseFrame);
@@ -223,9 +253,7 @@ public class WirelessAutoTrigger {
             return false;
         } finally {
             synchronized (socketLock_) {
-                if (activeRfcommSocket_ == socket) {
-                    activeRfcommSocket_ = null;
-                }
+                activeRfcommSockets_.remove(socket);
             }
             closeQuietly(socket);
         }
@@ -240,35 +268,38 @@ public class WirelessAutoTrigger {
         out.flush();
         if (Log.isInfo()) Log.i(TAG, "Sent WAA RFCOMM WifiStartRequest");
 
-        // Poll available bytes briefly since API 15 BluetoothSocket lacks SO_RCVTIMEO.
+        boolean started = false;
         long deadline = SystemClock.uptimeMillis() + 2500L;
+        byte[] header = new byte[4];
         while (gen == generation_.get() && SystemClock.uptimeMillis() < deadline) {
-            if (in.available() >= 4) {
-                byte[] header = new byte[4];
-                readFully(in, header, 0, 4);
-                int len = readMessageLength(header);
-                int msgId = readMessageId(header);
-                if (len < 0 || len > MAX_FRAME_PAYLOAD_BYTES) {
-                    return false;
-                }
-                byte[] payload = new byte[len];
-                if (len > 0) {
-                    readFully(in, payload, 0, len);
-                }
-                if (Log.isDebug()) Log.d(TAG, "Received WAA RFCOMM msgId=" + msgId + " len=" + len);
-                if (msgId == MSG_WIFI_INFO_REQUEST && infoResponseFrame != null) {
-                    out.write(infoResponseFrame);
-                    out.flush();
-                    if (Log.isInfo()) Log.i(TAG, "Sent WAA RFCOMM WifiInfoResponse");
-                } else if (msgId == MSG_WIFI_START_RESPONSE || msgId == MSG_WIFI_CONNECT_STATUS) {
-                    return true;
-                }
-                deadline = SystemClock.uptimeMillis() + 1500L;
+            if (!readFullyWithDeadline(gen, in, header, 4, deadline)) {
+                break;
+            }
+            int len = readMessageLength(header);
+            int msgId = readMessageId(header);
+            if (len < 0 || len > MAX_FRAME_PAYLOAD_BYTES) {
+                return started;
+            }
+            byte[] payload = new byte[len];
+            if (len > 0 && !readFullyWithDeadline(gen, in, payload, len, deadline)) {
+                break;
+            }
+            if (Log.isDebug()) Log.d(TAG, "Received WAA RFCOMM msgId=" + msgId + " len=" + len);
+            if (msgId == MSG_WIFI_INFO_REQUEST && infoResponseFrame != null) {
+                out.write(infoResponseFrame);
+                out.flush();
+                if (Log.isInfo()) Log.i(TAG, "Sent WAA RFCOMM WifiInfoResponse");
+                deadline = SystemClock.uptimeMillis() + 2500L;
+            } else if (msgId == MSG_WIFI_START_RESPONSE) {
+                started = true;
+                deadline = SystemClock.uptimeMillis() + 2500L;
+            } else if (msgId == MSG_WIFI_CONNECT_STATUS) {
+                return true;
             } else {
-                SystemClock.sleep(50);
+                deadline = SystemClock.uptimeMillis() + 1500L;
             }
         }
-        return false;
+        return started;
     }
 
     private void sendUdpTriggers(byte[] frame, String gatewayIp, int serverPort) {
@@ -348,14 +379,16 @@ public class WirelessAutoTrigger {
 
     private void closeSockets() {
         BluetoothServerSocket server;
-        BluetoothSocket client;
+        List<BluetoothSocket> clients;
         synchronized (socketLock_) {
             server = rfcommServerSocket_;
             rfcommServerSocket_ = null;
-            client = activeRfcommSocket_;
-            activeRfcommSocket_ = null;
+            clients = new ArrayList<>(activeRfcommSockets_);
+            activeRfcommSockets_.clear();
         }
-        closeQuietly(client);
+        for (BluetoothSocket client : clients) {
+            closeQuietly(client);
+        }
         closeQuietly(server);
     }
 
@@ -377,15 +410,30 @@ public class WirelessAutoTrigger {
         }
     }
 
-    private static void readFully(InputStream in, byte[] dst, int offset, int length) throws IOException {
+    // Poll available() since API 15 BluetoothSocket lacks SO_RCVTIMEO and a stalled peer blocks read() past deadline.
+    private boolean readFullyWithDeadline(int gen, InputStream in, byte[] dst, int length, long deadline) throws IOException {
         int read = 0;
         while (read < length) {
-            int n = in.read(dst, offset + read, length - read);
-            if (n < 0) {
-                throw new EOFException("Unexpected end of RFCOMM stream");
+            if (gen != generation_.get() || SystemClock.uptimeMillis() >= deadline) {
+                return false;
             }
-            read += n;
+            int avail = in.available();
+            if (avail > 0) {
+                int toRead = Math.min(length - read, avail);
+                int n = in.read(dst, read, toRead);
+                if (n < 0) {
+                    return false;
+                }
+                read += n;
+            } else {
+                SystemClock.sleep(50);
+            }
         }
+        return true;
+    }
+
+    static String normalizeBssid(String bssid) {
+        return bssid == null ? "" : bssid.trim().toUpperCase(Locale.US);
     }
 
     public static byte[] buildWifiStartRequestPayload(String ipAddress, int port) {
