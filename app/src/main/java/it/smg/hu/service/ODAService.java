@@ -65,6 +65,7 @@ public class ODAService extends Service implements IAndroidAutoEntityEventHandle
     private volatile boolean isRunning_;
     private volatile boolean stopRequested_;
     private volatile boolean shutdownRequested_;
+    private volatile boolean errorQuit_;
     private String currentMode_;
 
     private final Runnable shutdownTimeout_ = new Runnable() {
@@ -111,6 +112,7 @@ public class ODAService extends Service implements IAndroidAutoEntityEventHandle
         }
         currentMode_ = MODE_USB;
         stopRequested_ = false;
+        errorQuit_ = false;
         ConnectionManager.instance().connecting(MODE_USB, getString(R.string.connection_usb_connecting));
         startThread_ = new Thread(() -> {
             Looper.prepare();
@@ -155,6 +157,7 @@ public class ODAService extends Service implements IAndroidAutoEntityEventHandle
         }
         currentMode_ = MODE_WIFI;
         stopRequested_ = false;
+        errorQuit_ = false;
         ConnectionManager.instance().connecting(MODE_WIFI, getString(R.string.connection_wifi_connecting));
         startThread_ = new Thread(() -> {
             Looper.prepare();
@@ -215,6 +218,14 @@ public class ODAService extends Service implements IAndroidAutoEntityEventHandle
         }
     }
 
+    public boolean isSessionActive() {
+        return isRunning_ && androidAutoEntity_ != null && !stopping_.get();
+    }
+
+    public String currentMode() {
+        return currentMode_;
+    }
+
     public void releaseFocus(){
         if (androidAutoEntity_ != null) {
             androidAutoEntity_.releaseFocus();
@@ -254,8 +265,13 @@ public class ODAService extends Service implements IAndroidAutoEntityEventHandle
         }
 
         try {
+            LibUsbDevice sessionUsbDevice = MODE_USB.equals(currentMode_)
+                    ? usbManager_.aoapDevice() : null;
             if (!isRunning_ && androidAutoEntity_ == null) {
                 if (Log.isInfo()) Log.i(TAG, "service not running, already stopped?");
+                if (sessionUsbDevice != null) {
+                    usbManager_.finishSession(sessionUsbDevice, errorQuit_);
+                }
                 localBroadcastManager_.sendBroadcast(new Intent(ODAService.STOP_ACTION));
 //                stopService(new Intent(this, ODAService.class));
                 stopForeground(true);
@@ -285,8 +301,6 @@ public class ODAService extends Service implements IAndroidAutoEntityEventHandle
             }
 
             AndroidAutoEntity entity = androidAutoEntity_;
-            LibUsbDevice sessionUsbDevice = MODE_USB.equals(currentMode_)
-                    ? usbManager_.aoapDevice() : null;
             if (entity != null) {
                 try {
                     entity.stop();
@@ -304,7 +318,7 @@ public class ODAService extends Service implements IAndroidAutoEntityEventHandle
             }
 
             if (sessionUsbDevice != null) {
-                usbManager_.finishSession(sessionUsbDevice);
+                usbManager_.finishSession(sessionUsbDevice, errorQuit_);
             }
 
             Intent stopIntent = new Intent(ODAService.STOP_ACTION);
@@ -321,6 +335,7 @@ public class ODAService extends Service implements IAndroidAutoEntityEventHandle
             startThread_ = null;
             currentMode_ = null;
             shutdownRequested_ = false;
+            errorQuit_ = false;
             stopping_.set(false);
         }
 
@@ -383,6 +398,7 @@ public class ODAService extends Service implements IAndroidAutoEntityEventHandle
                 return;
             }
             Log.e(TAG, "closing with error " + error + "(" + nativeErrorCode + ")");
+            errorQuit_ = true;
             String message = getString(R.string.connection_native_error_code, error, nativeErrorCode);
             ConnectionManager.instance().failed(message);
             notifyUser(message);
