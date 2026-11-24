@@ -1,5 +1,6 @@
 package it.smg.hu.projection;
 
+import it.smg.hu.manager.HondaConnectManager;
 import it.smg.libs.aasdk.messenger.ChannelId;
 import it.smg.libs.common.Log;
 
