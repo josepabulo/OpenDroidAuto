@@ -12,8 +12,9 @@ using namespace android;
 
 namespace {
 
-constexpr std::size_t kMaxQueuedBuffers = 8;
-constexpr int64_t kMaxQueuedDurationUs = 250000;
+constexpr std::size_t kMaxQueuedBuffers = 12;
+constexpr std::size_t kMinDurationDropBuffers = 4;
+constexpr int64_t kMaxQueuedDurationUs = 500000;
 constexpr std::size_t kMaxSyncWaitBuffers = 8;
 constexpr auto kMaxSyncWait = std::chrono::milliseconds(250);
 
@@ -65,7 +66,7 @@ void OMXSource::queueBuffer(MediaBuffer* buffer){
     buffer->meta_data()->findInt64(kKeyTime, &timestampUs);
 
     bool durationExceeded = false;
-    if (!pbuffers_.empty() && timestampUs > 0 &&
+    if (pbuffers_.size() >= kMinDurationDropBuffers && timestampUs > 0 &&
         pbuffers_.front()->meta_data()->findInt64(kKeyTime, &oldestTimestampUs) &&
         oldestTimestampUs > 0 && timestampUs > oldestTimestampUs) {
         durationExceeded = timestampUs - oldestTimestampUs > kMaxQueuedDurationUs;
