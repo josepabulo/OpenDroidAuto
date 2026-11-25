@@ -18,7 +18,7 @@ TCPEndpoint::TCPEndpoint(ITCPWrapper& tcpWrapper, SocketPointer socket)
 //}
 
 void TCPEndpoint::send(common::DataConstBuffer buffer, Promise::Pointer promise) {
-    if (Log::isDebug()) Log_d("asyncWrite");
+    if (Log::isVerbose()) Log_v("asyncWrite");
     tcpWrapper_.asyncWrite(*socket_, std::move(buffer),
                            std::bind(&TCPEndpoint::asyncOperationHandler,
                                      this->shared_from_this(),
@@ -29,7 +29,7 @@ void TCPEndpoint::send(common::DataConstBuffer buffer, Promise::Pointer promise)
 
 void TCPEndpoint::receive(common::DataBuffer buffer, Promise::Pointer promise)
 {
-    if (Log::isDebug()) Log_d("asyncRead");
+    if (Log::isVerbose()) Log_v("asyncRead");
     tcpWrapper_.asyncRead(*socket_, std::move(buffer),
                           std::bind(&TCPEndpoint::asyncOperationHandler,
                                     this->shared_from_this(),
@@ -45,7 +45,7 @@ void TCPEndpoint::stop()
 
 void TCPEndpoint::asyncOperationHandler(const boost::system::error_code& ec, size_t bytesTransferred, Promise::Pointer promise)
 {
-    if (Log::isDebug()) Log_d("asyncOperationHandler");
+    if (Log::isVerbose()) Log_v("asyncOperationHandler");
     if(!ec)
     {
         if (Log::isVerbose()) Log_v("not error, resolve promise -> bytesTransferred %d", bytesTransferred);

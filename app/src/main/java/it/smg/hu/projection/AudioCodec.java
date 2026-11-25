@@ -3,6 +3,7 @@ package it.smg.hu.projection;
 import android.media.AudioFormat;
 import android.media.AudioManager;
 import android.media.AudioTrack;
+import android.os.Process;
 
 import java.nio.ByteBuffer;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -38,7 +39,7 @@ public class AudioCodec implements IAudioCodec, Runnable {
         sampleSize_ = sampleSize;
         running_ = new AtomicBoolean(false);
 
-        queue_ = new ArrayBlockingQueue<>(32);
+        queue_ = new ArrayBlockingQueue<>(64);
     }
 
     private static int channels2num(int channels){
@@ -135,6 +136,10 @@ public class AudioCodec implements IAudioCodec, Runnable {
         // a playback thread that outlived its stop() (the join below is bounded)
         // could release the track a freshly started thread was already writing to.
         final Thread self = Thread.currentThread();
+        try {
+            Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO);
+        } catch (Throwable ignored) {
+        }
         AudioTrack audioTrack;
         try {
             int bufferSize = AudioTrack.getMinBufferSize(sampleRate_, channels2num(channelConfig_), sampleSizeFromInt(sampleSize_));
@@ -143,8 +148,8 @@ public class AudioCodec implements IAudioCodec, Runnable {
                 running_.set(false);
                 return;
             }
-            if (Log.isInfo()) Log.i(TAG, "Buffer size " + bufferSize + "*3");
-            audioTrack = new AudioTrack(streamType_, sampleRate_, channels2num(channelConfig_), sampleSizeFromInt(sampleSize_), bufferSize * 3, AudioTrack.MODE_STREAM);
+            if (Log.isInfo()) Log.i(TAG, "Buffer size " + bufferSize + "*6");
+            audioTrack = new AudioTrack(streamType_, sampleRate_, channels2num(channelConfig_), sampleSizeFromInt(sampleSize_), bufferSize * 6, AudioTrack.MODE_STREAM);
         } catch (Exception e) {
             Log.e(TAG, "error in audiotrack creation", e);
             running_.set(false);

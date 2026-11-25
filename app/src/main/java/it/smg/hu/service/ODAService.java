@@ -2,7 +2,9 @@ package it.smg.hu.service;
 
 import android.app.Notification;
 import android.app.Service;
+import android.content.Context;
 import android.content.Intent;
+import android.net.wifi.WifiManager;
 import android.os.Binder;
 import android.os.Handler;
 import android.os.IBinder;
@@ -91,6 +93,8 @@ public class ODAService extends Service implements IAndroidAutoEntityEventHandle
     private final AtomicBoolean stopping_ = new AtomicBoolean(false);
     private final AtomicBoolean starting_ = new AtomicBoolean(false);
     private final Object entityLock_ = new Object();
+    private final Object wifiLockGuard_ = new Object();
+    private WifiManager.WifiLock wifiLock_;
 
     public ODAService() {}
 
@@ -223,6 +227,7 @@ public class ODAService extends Service implements IAndroidAutoEntityEventHandle
             stopRequested_ = false;
         }
         errorQuit_ = false;
+        acquireWifiLock();
         ConnectionManager.instance().connecting(MODE_WIFI, getString(R.string.connection_wifi_connecting));
         startThread_ = new Thread(() -> {
             Looper.prepare();
@@ -247,6 +252,7 @@ public class ODAService extends Service implements IAndroidAutoEntityEventHandle
                         if (wifiManager_ != null) {
                             wifiManager_.setSessionActive(false);
                         }
+                        releaseWifiLock();
                         return;
                     }
                     tcpEndpoint = new TCPEndpoint(acceptedFd);
@@ -254,6 +260,7 @@ public class ODAService extends Service implements IAndroidAutoEntityEventHandle
                     builtEntity = AndroidAutoEntityFactory.create(this, tcpEndpoint, surfaceView, keyHolder);
                 } else if (ipAddress != null) {
                     if (stopRequested_) {
+                        releaseWifiLock();
                         return;
                     }
                     try {
@@ -282,6 +289,7 @@ public class ODAService extends Service implements IAndroidAutoEntityEventHandle
                     if (wifiManager_ != null) {
                         wifiManager_.setSessionActive(false);
                     }
+                    releaseWifiLock();
                     ConnectionManager.instance().failed(MODE_WIFI, getString(R.string.connection_wifi_gateway_error));
                     runNativeQuitOnMainThread(this::stop);
                     return;
@@ -293,6 +301,7 @@ public class ODAService extends Service implements IAndroidAutoEntityEventHandle
                     if (wifiManager_ != null) {
                         wifiManager_.setSessionActive(false);
                     }
+                    releaseWifiLock();
                     return;
                 }
 
@@ -320,6 +329,7 @@ public class ODAService extends Service implements IAndroidAutoEntityEventHandle
                     if (wifiManager_ != null) {
                         wifiManager_.setSessionActive(false);
                     }
+                    releaseWifiLock();
                     return;
                 }
                 if (Log.isInfo()) Log.i(TAG, "start wifi thead completed");
@@ -352,6 +362,7 @@ public class ODAService extends Service implements IAndroidAutoEntityEventHandle
                 if (wifiManager_ != null) {
                     wifiManager_.setSessionActive(false);
                 }
+                releaseWifiLock();
                 String target = endpointLabel != null ? endpointLabel : "";
                 String reason = wasIncomingSocket
                         ? getString(R.string.connection_wifi_incoming_error, target)
@@ -531,6 +542,7 @@ public class ODAService extends Service implements IAndroidAutoEntityEventHandle
         } finally {
             // Cleared unconditionally so a failed teardown cannot wedge the
             // service into a state where no further session can be started.
+            releaseWifiLock();
             androidAutoEntity_ = null;
             startThread_ = null;
             currentMode_ = null;
@@ -539,6 +551,38 @@ public class ODAService extends Service implements IAndroidAutoEntityEventHandle
             stopping_.set(false);
         }
 
+    }
+
+    @SuppressWarnings("deprecation")
+    private void acquireWifiLock() {
+        synchronized (wifiLockGuard_) {
+            try {
+                if (wifiLock_ == null) {
+                    WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+                    if (wm != null) {
+                        wifiLock_ = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "ODA:WirelessAA");
+                        wifiLock_.setReferenceCounted(false);
+                    }
+                }
+                if (wifiLock_ != null && !wifiLock_.isHeld()) {
+                    wifiLock_.acquire();
+                }
+            } catch (Throwable t) {
+                Log.w(TAG, "Unable to acquire high-perf WifiLock: " + t.getMessage());
+            }
+        }
+    }
+
+    private void releaseWifiLock() {
+        synchronized (wifiLockGuard_) {
+            try {
+                if (wifiLock_ != null && wifiLock_.isHeld()) {
+                    wifiLock_.release();
+                }
+            } catch (Throwable t) {
+                Log.w(TAG, "Unable to release WifiLock: " + t.getMessage());
+            }
+        }
     }
 
     @Override

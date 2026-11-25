@@ -185,7 +185,10 @@ size_t Cryptor::decrypt(common::Data& output, const common::DataConstBuffer& buf
 
     while(true)
     {
-        output.resize(beginOffset + totalReadSize + 1 + availableBytes);
+        const size_t nextChunkSize = availableBytes > 0
+                ? availableBytes
+                : std::max<size_t>(buffer.size, 4096);
+        output.resize(beginOffset + totalReadSize + nextChunkSize);
         const auto& currentBuffer = common::DataBuffer(output, totalReadSize + beginOffset);
         auto readSize = sslWrapper_->sslRead(ssl_, currentBuffer.data, currentBuffer.size);
 

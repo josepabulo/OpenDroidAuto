@@ -52,7 +52,7 @@ void TCPTransport::enqueueSend(SendQueue::iterator queueElement)
         this->sendHandler(queueElement, e);
     });
 
-	if (Log::isDebug()) Log_d("send to tcpendpoint");
+    if (Log::isVerbose()) Log_v("send to tcpendpoint");
     tcpEndpoint_->send(common::DataConstBuffer(*payload), std::move(sendPromise));
 }
 

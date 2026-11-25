@@ -3,6 +3,8 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <netinet/ip.h>
+#include <netinet/tcp.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -23,6 +25,10 @@ void TCPWrapper::asyncWrite(boost::asio::ip::tcp::socket& socket, common::DataCo
 
 void TCPWrapper::asyncRead(boost::asio::ip::tcp::socket& socket, common::DataBuffer buffer, Handler handler)
 {
+#ifdef TCP_QUICKACK
+    int quickAck = 1;
+    ::setsockopt(socket.native_handle(), IPPROTO_TCP, TCP_QUICKACK, &quickAck, sizeof(quickAck));
+#endif
     socket.async_receive(boost::asio::buffer(buffer.data, buffer.size), std::move(handler));
 }
 
@@ -74,6 +80,19 @@ boost::system::error_code TCPWrapper::assignFd(boost::asio::ip::tcp::socket& soc
     boost::system::error_code optEc;
     socket.set_option(boost::asio::ip::tcp::no_delay(true), optEc);
     socket.set_option(boost::asio::socket_base::keep_alive(true), optEc);
+    socket.set_option(boost::asio::socket_base::receive_buffer_size(256 * 1024), optEc);
+    socket.set_option(boost::asio::socket_base::send_buffer_size(256 * 1024), optEc);
+    const int nativeFd = socket.native_handle();
+#if defined(IPTOS_LOWDELAY) && defined(IP_TOS)
+    if (!isV6) {
+        int tos = IPTOS_LOWDELAY;
+        ::setsockopt(nativeFd, IPPROTO_IP, IP_TOS, &tos, sizeof(tos));
+    }
+#endif
+#ifdef TCP_QUICKACK
+    int quickAck = 1;
+    ::setsockopt(nativeFd, IPPROTO_TCP, TCP_QUICKACK, &quickAck, sizeof(quickAck));
+#endif
     return ec;
 }
 
