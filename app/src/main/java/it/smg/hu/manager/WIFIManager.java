@@ -93,7 +93,9 @@ public class WIFIManager {
                 ipAddress_ = ipAddress();
                 networkSSID_ = networkSSID();
                 if (ipAddress_ == null) {
-                    ConnectionManager.instance().failed(ctx_.getString(R.string.connection_hotspot_gateway_error));
+                    if (!"modeUSB".equals(ConnectionManager.instance().mode())) {
+                        ConnectionManager.instance().failed("modeWifi", ctx_.getString(R.string.connection_hotspot_gateway_error));
+                    }
                     return;
                 }
                 if (Log.isDebug()) Log.d(TAG, "Network with ip: " + ipAddress_);

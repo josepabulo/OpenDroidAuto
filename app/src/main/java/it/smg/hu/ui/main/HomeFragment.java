@@ -152,8 +152,10 @@ public class HomeFragment extends Fragment {
             // Move a Wi-Fi retry back to a startable state explicitly. ERROR is
             // otherwise blocked by ConnectionPolicy to prevent accidental
             // overlapping sessions from widgets or duplicate taps.
-            ConnectionManager.instance().transportAvailable(mode,
-                    ConnectionManager.instance().lastMessage());
+            ConnectionManager.instance().prepareRetry(mode,
+                    ODAService.MODE_WIFI.equals(mode)
+                            ? getString(R.string.connection_wifi_connecting)
+                            : getString(R.string.connection_usb_connecting));
             ((MainActivity) requireActivity()).startConnectionManually(mode);
         } else if (mode != null && (!ODAService.MODE_USB.equals(mode)
                 || (usbManager_ != null && usbManager_.aoapDevice() != null))) {
