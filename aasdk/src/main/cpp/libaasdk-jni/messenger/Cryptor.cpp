@@ -23,6 +23,7 @@ Cryptor::Cryptor(transport::ISSLWrapper::Pointer sslWrapper)
 
 Cryptor::~Cryptor(){
     if (Log::isVerbose()) Log_v("destructor");
+    deinit();
     sslWrapper_.reset();
 }
 
@@ -84,6 +85,10 @@ void Cryptor::init()
 
     if(bIOs_.second == nullptr)
     {
+        if (bIOs_.first != nullptr) {
+            sslWrapper_->free(bIOs_.first);
+            bIOs_.first = nullptr;
+        }
         throw error::Error(error::ErrorCode::SSL_WRITE_BIO_CREATION);
     }
 
@@ -96,12 +101,26 @@ void Cryptor::deinit()
 {
     std::lock_guard<decltype(mutex_)> lock(mutex_);
 
+    const bool wasActive = isActive_;
+    isActive_ = false;
+
+    if (sslWrapper_ == nullptr) {
+        bIOs_ = std::make_pair(nullptr, nullptr);
+        ssl_ = nullptr;
+        context_ = nullptr;
+        certificate_ = nullptr;
+        privateKey_ = nullptr;
+        return;
+    }
+
     if(ssl_ != nullptr)
     {
-        int r = sslWrapper_->shutdown(ssl_);
-        if (r == 0){
-            int err = sslWrapper_->getError(ssl_, r);
-            Log_e("deinit: ssl shutdown error %d", err);
+        if (wasActive) {
+            int r = sslWrapper_->shutdown(ssl_);
+            if (r < 0){
+                int err = sslWrapper_->getError(ssl_, r);
+                Log_e("deinit: ssl shutdown error %d", err);
+            }
         }
         sslWrapper_->free(ssl_);
         ssl_ = nullptr;
@@ -132,6 +151,10 @@ bool Cryptor::doHandshake()
 {
     std::lock_guard<decltype(mutex_)> lock(mutex_);
 
+    if (ssl_ == nullptr) {
+        throw error::Error(error::ErrorCode::SSL_HANDSHAKE, 0);
+    }
+
     auto result = sslWrapper_->doHandshake(ssl_);
     if(result == SSL_ERROR_WANT_READ)
     {
@@ -151,6 +174,10 @@ bool Cryptor::doHandshake()
 size_t Cryptor::encrypt(common::Data& output, const common::DataConstBuffer& buffer)
 {
     std::lock_guard<decltype(mutex_)> lock(mutex_);
+
+    if (ssl_ == nullptr || bIOs_.second == nullptr) {
+        throw error::Error(error::ErrorCode::SSL_WRITE, 0);
+    }
 
     size_t totalWrittenBytes = 0;
 
@@ -173,6 +200,10 @@ size_t Cryptor::encrypt(common::Data& output, const common::DataConstBuffer& buf
 size_t Cryptor::decrypt(common::Data& output, const common::DataConstBuffer& buffer)
 {
     std::lock_guard<decltype(mutex_)> lock(mutex_);
+
+    if (ssl_ == nullptr || bIOs_.first == nullptr) {
+        throw error::Error(error::ErrorCode::SSL_READ, 0);
+    }
 
     if (buffer.size == 0) {
         return 0;
@@ -217,6 +248,10 @@ common::Data Cryptor::readHandshakeBuffer()
 {
     std::lock_guard<decltype(mutex_)> lock(mutex_);
 
+    if (ssl_ == nullptr || bIOs_.second == nullptr) {
+        throw error::Error(error::ErrorCode::SSL_BIO_READ, 0);
+    }
+
     common::Data output;
     this->read(output);
     return output;
@@ -225,6 +260,10 @@ common::Data Cryptor::readHandshakeBuffer()
 void Cryptor::writeHandshakeBuffer(const common::DataConstBuffer& buffer)
 {
     std::lock_guard<decltype(mutex_)> lock(mutex_);
+
+    if (bIOs_.first == nullptr) {
+        throw error::Error(error::ErrorCode::SSL_BIO_WRITE, 0);
+    }
 
     this->write(buffer);
 }

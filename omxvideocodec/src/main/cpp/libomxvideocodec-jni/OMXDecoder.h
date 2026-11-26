@@ -33,4 +33,5 @@ private:
     int32_t frameRate_;
 
     status_t status_;
+    bool clientConnected_;
 };

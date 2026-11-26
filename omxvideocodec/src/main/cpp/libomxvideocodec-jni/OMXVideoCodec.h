@@ -3,6 +3,7 @@
 #include <sys/types.h>
 #include "OMXSource.h"
 #include "OMXDecoder.h"
+#include <atomic>
 #include <thread>
 #include <android/looper.h>
 
@@ -31,7 +32,7 @@ public:
 private:
     void init_omxDecoderThread();
 
-    OMXSource::Pointer omxSource_;
+    sp<OMXSource> omxSource_;
     OMXDecoder::Pointer omxDecoder_;
 
     std::thread omxDecoderThread_;
@@ -40,7 +41,7 @@ private:
 
 //    bool omxDecoderThreadRunning_;
     bool decoderThreadInitialized_;
-    bool decoderThreadQuitFlag_;
+    std::atomic<bool> decoderThreadQuitFlag_;
     sp<ANativeWindow> nativeWindow_;
     ScreenSize screenSize_;
     int fps_;

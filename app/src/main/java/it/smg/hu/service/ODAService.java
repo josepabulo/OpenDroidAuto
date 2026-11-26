@@ -528,8 +528,7 @@ public class ODAService extends Service implements IAndroidAutoEntityEventHandle
         Notification notification = notificationFactory_.create();
         startForeground(123456, notification);
 
-//        return START_NOT_STICKY;
-        return START_STICKY;
+        return START_NOT_STICKY;
     }
 
     @Keep

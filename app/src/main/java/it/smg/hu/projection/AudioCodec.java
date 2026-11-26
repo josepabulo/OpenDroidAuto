@@ -88,7 +88,7 @@ public class AudioCodec implements IAudioCodec, Runnable {
     }
 
     @Override
-    public void start() {
+    public synchronized void start() {
         if (Log.isInfo()) Log.i(TAG, "Start");
 
         if (running_.getAndSet(true)) {
@@ -102,28 +102,27 @@ public class AudioCodec implements IAudioCodec, Runnable {
     }
 
     @Override
-    public void stop() {
+    public synchronized void stop() {
         if (Log.isInfo()) Log.i(TAG, "Stop");
-        if (running_.get()) {
-            running_.set(false);
+        running_.set(false);
 
-            Thread codecThread = codecThread_;
-            // Cleared before joining, so a thread still blocked inside
-            // AudioTrack.write() sees it has been superseded and bails out on its
-            // own once the write returns, even if the join below times out.
-            codecThread_ = null;
-            if (codecThread != null){
-                try {
-                    codecThread.join(1000);
-                    if (Log.isDebug()) Log.d(TAG + "_" + name_, "thread joined");
-                } catch (InterruptedException ignored) {
-                    Thread.currentThread().interrupt();
-                }
+        Thread codecThread = codecThread_;
+        // Cleared before joining, so a thread still blocked inside
+        // AudioTrack.write() sees it has been superseded and bails out on its
+        // own once the write returns, even if the join below times out.
+        codecThread_ = null;
+        if (codecThread != null){
+            codecThread.interrupt();
+            try {
+                codecThread.join(1000);
+                if (Log.isDebug()) Log.d(TAG + "_" + name_, "thread joined");
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
             }
-
-            queue_.clear();
-            if (Log.isDebug()) Log.d(TAG, "queue empty");
         }
+
+        queue_.clear();
+        if (Log.isDebug()) Log.d(TAG, "queue empty");
     }
 
     @Override
@@ -145,14 +144,26 @@ public class AudioCodec implements IAudioCodec, Runnable {
             int bufferSize = AudioTrack.getMinBufferSize(sampleRate_, channels2num(channelConfig_), sampleSizeFromInt(sampleSize_));
             if (bufferSize <= 0) {
                 Log.e(TAG, "Invalid AudioTrack buffer size " + bufferSize);
-                running_.set(false);
+                if (codecThread_ == self) {
+                    running_.set(false);
+                }
                 return;
             }
             if (Log.isInfo()) Log.i(TAG, "Buffer size " + bufferSize + "*3");
             audioTrack = new AudioTrack(streamType_, sampleRate_, channels2num(channelConfig_), sampleSizeFromInt(sampleSize_), bufferSize * 3, AudioTrack.MODE_STREAM);
+            if (audioTrack.getState() != AudioTrack.STATE_INITIALIZED) {
+                Log.e(TAG, "AudioTrack not initialized (state=" + audioTrack.getState() + ")");
+                audioTrack.release();
+                if (codecThread_ == self) {
+                    running_.set(false);
+                }
+                return;
+            }
         } catch (Exception e) {
             Log.e(TAG, "error in audiotrack creation", e);
-            running_.set(false);
+            if (codecThread_ == self) {
+                running_.set(false);
+            }
             return;
         }
 
@@ -174,13 +185,27 @@ public class AudioCodec implements IAudioCodec, Runnable {
                     break;
                 }
                 if (data != null){
-                    audioTrack.write(data, 0, data.length);
+                    int written = audioTrack.write(data, 0, data.length);
+                    if (written < 0) {
+                        Log.e(TAG, "AudioTrack.write failed: " + written);
+                        if (codecThread_ == self) {
+                            running_.set(false);
+                        }
+                        break;
+                    }
                 }
+            }
+        } catch (RuntimeException e) {
+            Log.e(TAG, "error in audiotrack playback", e);
+            if (codecThread_ == self) {
+                running_.set(false);
             }
         } finally {
             if (Log.isInfo()) Log.i(TAG, "stop audiotrack");
             try {
                 if (audioTrack.getPlayState() == AudioTrack.PLAYSTATE_PLAYING) {
+                    // flush() is a no-op while playing; pause before flushing pending PCM frames.
+                    audioTrack.pause();
                     audioTrack.flush();
                     audioTrack.stop();
                 }

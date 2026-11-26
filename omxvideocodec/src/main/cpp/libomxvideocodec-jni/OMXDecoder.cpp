@@ -9,7 +9,8 @@ OMXDecoder::OMXDecoder():
         source_(nullptr),
         client_(new OMXClient()),
         frameRate_(0),
-        status_(-1)
+        status_(-1),
+        clientConnected_(false)
 {
 }
 
@@ -36,10 +37,25 @@ status_t OMXDecoder::init(){
     if (Log::isInfo()) Log_i("client connect %d", status_);
 
     if (status_ == OK) {
+        clientConnected_ = true;
         uint32_t flags = OMXCodec::kHardwareCodecsOnly;
         decoder_ = OMXCodec::Create(client_->interface(), source_->getFormat(), false, source_,
                                     nullptr, flags, nativeWindow_);
+        if (decoder_.get() == nullptr) {
+            Log_e("OMXCodec::Create returned null");
+            status_ = NO_INIT;
+            client_->disconnect();
+            clientConnected_ = false;
+            return status_;
+        }
         status_ = decoder_->start();
+        if (status_ != OK) {
+            Log_e("decoder start failed %d", status_);
+            decoder_.clear();
+            client_->disconnect();
+            clientConnected_ = false;
+            return status_;
+        }
 
         if (Log::isInfo()) Log_i("decoder started %d", status_);
     }
@@ -49,10 +65,16 @@ status_t OMXDecoder::init(){
 
 void OMXDecoder::stop(){
     if (Log::isInfo()) Log_i("stop decoder");
-    status_t ret = decoder_->stop();
-    if (Log::isDebug()) Log_d("stopped %d", ret);
-    if (Log::isInfo()) Log_i("disconnect client");
-    client_->disconnect();
+    if (decoder_.get() != nullptr) {
+        status_t ret = decoder_->stop();
+        if (Log::isDebug()) Log_d("stopped %d", ret);
+        decoder_.clear();
+    }
+    if (clientConnected_) {
+        if (Log::isInfo()) Log_i("disconnect client");
+        client_->disconnect();
+        clientConnected_ = false;
+    }
     if (Log::isDebug()) Log_d("stopped");
 }
 
@@ -70,6 +92,9 @@ OMXDecoder::~OMXDecoder(){
 
 status_t OMXDecoder::read(){
     if (Log::isVerbose()) Log_v("read");
+    if (decoder_.get() == nullptr) {
+        return NO_INIT;
+    }
 
     MediaBuffer *videoBuffer = nullptr;
     MediaSource::ReadOptions options;
@@ -78,7 +103,7 @@ status_t OMXDecoder::read(){
     if (Log::isVerbose()) Log_v("decoder read ret = %d", ret);
 
     if (ret == OK) {
-        if (videoBuffer->range_length() > 0) {
+        if (videoBuffer != nullptr && videoBuffer->range_length() > 0) {
             if (Log::isVerbose()) Log_v("videobuffer length %d", videoBuffer->range_length());
             sp<MetaData> metaData = videoBuffer->meta_data();
             native_window_set_buffers_timestamp(nativeWindow_.get(),

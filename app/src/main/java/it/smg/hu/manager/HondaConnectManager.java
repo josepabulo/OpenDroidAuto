@@ -137,7 +137,7 @@ public class HondaConnectManager {
     private volatile int currentIdx_;
 
     private final Handler mainHandler_;
-    private ISensor.Listener dayNightListener_;
+    private volatile ISensor.Listener dayNightListener_;
 
     public static void init(Context context){
         instance_ = new HondaConnectManager(context);
@@ -1032,30 +1032,35 @@ public class HondaConnectManager {
     }
 
     private void heartbeat(){
-        if (Log.isDebug()) Log.d(TAG, "heartbeat currentModeState_= " + currentModeState_ + " currentIdx_= " + currentIdx_);
-        if (modeMgrManager_ != null && currentModeState_ != 0) {
-            int idx = currentIdx_;
+        try {
+            if (Log.isDebug()) Log.d(TAG, "heartbeat currentModeState_= " + currentModeState_ + " currentIdx_= " + currentIdx_);
+            if (modeMgrManager_ != null && currentModeState_ != 0) {
+                int idx = currentIdx_;
 
-            int sound_param = currentModeState_ & ModeMgrMode.NOTIFY_AUDIO;
-            int image_param = currentModeState_ & ModeMgrMode.NOTIFY_VIDEO;
-            if (Log.isDebug()) Log.d(TAG, "heartbeat sound_param= " + sound_param + " image_param= " + image_param);
+                int sound_param = currentModeState_ & ModeMgrMode.NOTIFY_AUDIO;
+                int image_param = currentModeState_ & ModeMgrMode.NOTIFY_VIDEO;
+                if (Log.isDebug()) Log.d(TAG, "heartbeat sound_param= " + sound_param + " image_param= " + image_param);
 
-            int notifyMode;
-            if (sound_param != 0 && image_param != 0){
-                notifyMode = ModeMgrMode.NOTIFY_BOTH;
-            } else if (sound_param == 0 && image_param != 0){
-                notifyMode = ModeMgrMode.NOTIFY_VIDEO;
-            } else if (sound_param != 0){
-                notifyMode = ModeMgrMode.NOTIFY_AUDIO;
-            } else {
-                if (Log.isWarn()) Log.w(TAG, "mode unknown");
-                return;
+                int notifyMode;
+                if (sound_param != 0 && image_param != 0){
+                    notifyMode = ModeMgrMode.NOTIFY_BOTH;
+                } else if (sound_param == 0 && image_param != 0){
+                    notifyMode = ModeMgrMode.NOTIFY_VIDEO;
+                } else if (sound_param != 0){
+                    notifyMode = ModeMgrMode.NOTIFY_AUDIO;
+                } else {
+                    if (Log.isWarn()) Log.w(TAG, "mode unknown");
+                    return;
+                }
+
+                if (Log.isDebug()) Log.d(TAG, "heartbeat notifyModeMgrStatus idx= " + idx + ", state = " + notifyMode);
+
+                int ret = modeMgrManager_.notifyModeMgrStatus(idx, notifyMode);
+                if (Log.isDebug()) Log.d(TAG, "heartbeat notifyModeMgrStatus ret = " + ret);
             }
-
-            if (Log.isDebug()) Log.d(TAG, "heartbeat notifyModeMgrStatus idx= " + idx + ", state = " + notifyMode);
-
-            int ret = modeMgrManager_.notifyModeMgrStatus(idx, notifyMode);
-            if (Log.isDebug()) Log.d(TAG, "heartbeat notifyModeMgrStatus ret = " + ret);
+        } catch (Throwable t) {
+            // Keep ScheduledExecutorService alive across transient Binder/system hiccups.
+            Log.e(TAG, "heartbeat error", t);
         }
     }
 
@@ -1199,6 +1204,15 @@ public class HondaConnectManager {
         });
     }
 
+    private void injectKeyEvent(int keyCode) {
+        try {
+            new Instrumentation().sendKeyDownUpSync(keyCode);
+        } catch (RuntimeException e) {
+            // Key injection fails when another system window (e.g. rear camera or volume overlay) holds focus.
+            if (Log.isWarn()) Log.w(TAG, "failed to inject steering key " + keyCode + ": " + e.getMessage());
+        }
+    }
+
     private class ModeMgrServiceSWKeyEventCallBack extends IModeMgrServiceSWKeyEventCallBack.Stub {
 
         private static final String TAG = "HondaConnectManager-ModeMgrServiceSWKeyEventCallBack";
@@ -1206,8 +1220,7 @@ public class HondaConnectManager {
         @Override
         public void rcvStrgKeyEvent(int i, int i1) throws RemoteException {
             if (Log.isDebug()) Log.d(TAG, "rcvStrgKeyEvent  " + i + "/" + i1);
-            Instrumentation instrumentation = new Instrumentation();
-            instrumentation.sendKeyDownUpSync(i);
+            injectKeyEvent(i);
         }
     };
 
@@ -1218,8 +1231,7 @@ public class HondaConnectManager {
         @Override
         public void rcvKeyInspecCmd(int i, int i1) throws RemoteException {
             if (Log.isDebug()) Log.d(TAG, "rcvKeyInspecCmd  " + i + "/" + i1);
-            Instrumentation instrumentation = new Instrumentation();
-            instrumentation.sendKeyDownUpSync(i);
+            injectKeyEvent(i);
         }
     }
 
@@ -1229,8 +1241,7 @@ public class HondaConnectManager {
         @Override
         public void rcvStrgKeyCmd(int i) throws RemoteException {
             if (Log.isDebug()) Log.d(TAG, "rcvStrgKeyCmd  " + i);
-            Instrumentation instrumentation = new Instrumentation();
-            instrumentation.sendKeyDownUpSync(i);
+            injectKeyEvent(i);
         }
     };
 
@@ -1257,8 +1268,7 @@ public class HondaConnectManager {
 //                });
 //            }
 
-            Instrumentation instrumentation = new Instrumentation();
-            instrumentation.sendKeyDownUpSync(keytype);
+            injectKeyEvent(keytype);
 
             return true;
         }
@@ -1314,8 +1324,9 @@ public class HondaConnectManager {
             if (changed.dayNightStateC) {
                 boolean isNight = info.dayNightState == StateMgrServiceConst.STATE_NIGHT;
                 if (Log.isDebug()) Log.d(TAG, "DayNight state changed, isNight: " + isNight);
-                if (dayNightListener_ != null){
-                    dayNightListener_.onDayNightUpdate(isNight);
+                ISensor.Listener listener = dayNightListener_;
+                if (listener != null){
+                    listener.onDayNightUpdate(isNight);
                 }
             }
         }

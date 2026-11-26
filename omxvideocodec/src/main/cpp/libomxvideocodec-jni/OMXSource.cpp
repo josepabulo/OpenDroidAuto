@@ -51,6 +51,12 @@ OMXSource::~OMXSource() {
 
 void OMXSource::queueBuffer(MediaBuffer* buffer){
     if (Log::isVerbose()) Log_v("add buffer to queue");
+    const auto* bufferData = static_cast<const uint8_t*>(buffer->data());
+    const auto* data = bufferData == nullptr ? nullptr : bufferData + buffer->range_offset();
+    const h264::NalInfo nalInfo = h264::inspectNalUnits(data, buffer->range_length());
+    int64_t timestampUs = 0;
+    buffer->meta_data()->findInt64(kKeyTime, &timestampUs);
+
     std::unique_lock<std::mutex> l(mutex_);
 
     if (quitFlag_) {
@@ -58,12 +64,7 @@ void OMXSource::queueBuffer(MediaBuffer* buffer){
         return;
     }
 
-    const auto* bufferData = static_cast<const uint8_t*>(buffer->data());
-    const auto* data = bufferData == nullptr ? nullptr : bufferData + buffer->range_offset();
-    const h264::NalInfo nalInfo = h264::inspectNalUnits(data, buffer->range_length());
-    int64_t timestampUs = 0;
     int64_t oldestTimestampUs = 0;
-    buffer->meta_data()->findInt64(kKeyTime, &timestampUs);
 
     bool durationExceeded = false;
     if (pbuffers_.size() >= kMinDurationDropBuffers && timestampUs > 0 &&
