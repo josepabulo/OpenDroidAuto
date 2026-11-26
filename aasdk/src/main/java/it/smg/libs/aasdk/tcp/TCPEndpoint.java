@@ -21,7 +21,10 @@ public class TCPEndpoint {
 
     public void delete(){
         Log.v(TAG, "delete");
-        nativeDelete();
+        if (handle_ != 0) {
+            nativeDelete();
+            handle_ = 0;
+        }
     }
 
     static {
