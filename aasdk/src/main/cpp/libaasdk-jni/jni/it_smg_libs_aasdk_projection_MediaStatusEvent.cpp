@@ -47,7 +47,13 @@ void JMediaStatusEvent::mediaPlaybackUpdate(const aasdk::proto::messages::MediaI
     jfieldID playbackStateID = NULL;
     if (playback.has_playback_state()){
         std::string playbackState = aasdk::proto::messages::MediaInfoChannelPlaybackData_PlaybackState_Name(playback.playback_state());
-        playbackStateID = env->GetStaticFieldID(playbackStateClass_, playbackState.c_str(), "Lit/smg/libs/aasdk/projection/IMediaStatusEvent$PlaybackState;");
+        if (!playbackState.empty()) {
+            playbackStateID = env->GetStaticFieldID(playbackStateClass_, playbackState.c_str(), "Lit/smg/libs/aasdk/projection/IMediaStatusEvent$PlaybackState;");
+            if (env->ExceptionCheck()) {
+                env->ExceptionClear();
+                playbackStateID = NULL;
+            }
+        }
     }
     if (playbackStateID == NULL){
         playbackStateID = env->GetStaticFieldID(playbackStateClass_, "NONE", "Lit/smg/libs/aasdk/projection/IMediaStatusEvent$PlaybackState;");

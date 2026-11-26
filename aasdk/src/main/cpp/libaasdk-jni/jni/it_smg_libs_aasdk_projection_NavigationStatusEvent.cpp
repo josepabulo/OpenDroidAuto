@@ -61,7 +61,13 @@ void JNavigationStatusEvent::navigationStatusUpdate(const aasdk::proto::messages
     jfieldID navigationStatusID = NULL;
     if (navStatus.has_status()){
         std::string navigationStatus = aasdk::proto::messages::NavigationStatus_Enum_Name(navStatus.status());
-        navigationStatusID = env->GetStaticFieldID(navigationStatusClass_, navigationStatus.c_str(), "Lit/smg/libs/aasdk/projection/INavigationStatusEvent$NavigationStatus;");
+        if (!navigationStatus.empty()) {
+            navigationStatusID = env->GetStaticFieldID(navigationStatusClass_, navigationStatus.c_str(), "Lit/smg/libs/aasdk/projection/INavigationStatusEvent$NavigationStatus;");
+            if (env->ExceptionCheck()) {
+                env->ExceptionClear();
+                navigationStatusID = NULL;
+            }
+        }
     }
     if (navigationStatusID == NULL){
         if (Log::isVerbose()) Log_v("navigationStatus null or unknown");
@@ -93,7 +99,13 @@ void JNavigationStatusEvent::navigationTurnEvent(const aasdk::proto::messages::N
     jfieldID maneuverTypeID = NULL;
     if (turnEvent.has_maneuvertype()){
         std::string maneuverType = aasdk::proto::enums::ManeuverType_Enum_Name(turnEvent.maneuvertype());
-        maneuverTypeID = env->GetStaticFieldID(maneuverTypeClass_, maneuverType.c_str(), "Lit/smg/libs/aasdk/projection/INavigationStatusEvent$ManeuverType;");
+        if (!maneuverType.empty()) {
+            maneuverTypeID = env->GetStaticFieldID(maneuverTypeClass_, maneuverType.c_str(), "Lit/smg/libs/aasdk/projection/INavigationStatusEvent$ManeuverType;");
+            if (env->ExceptionCheck()) {
+                env->ExceptionClear();
+                maneuverTypeID = NULL;
+            }
+        }
     }
     if (maneuverTypeID == NULL){
         if (Log::isVerbose()) Log_v("maneuverType null or unknown");
@@ -103,11 +115,17 @@ void JNavigationStatusEvent::navigationTurnEvent(const aasdk::proto::messages::N
 
     jfieldID maneuverDirectionID = NULL;
     if (turnEvent.has_maneuverdirection()){
-        if (Log::isVerbose()) Log_v("maneuverDirection null or unknown");
         std::string maneuverDirection = aasdk::proto::enums::ManeuverDirection_Enum_Name(turnEvent.maneuverdirection());
-        maneuverDirectionID = env->GetStaticFieldID(maneuverDirectionClass_, maneuverDirection.c_str(), "Lit/smg/libs/aasdk/projection/INavigationStatusEvent$ManeuverDirection;");
+        if (!maneuverDirection.empty()) {
+            maneuverDirectionID = env->GetStaticFieldID(maneuverDirectionClass_, maneuverDirection.c_str(), "Lit/smg/libs/aasdk/projection/INavigationStatusEvent$ManeuverDirection;");
+            if (env->ExceptionCheck()) {
+                env->ExceptionClear();
+                maneuverDirectionID = NULL;
+            }
+        }
     }
     if (maneuverDirectionID == NULL){
+        if (Log::isVerbose()) Log_v("maneuverDirection null or unknown");
         maneuverDirectionID = env->GetStaticFieldID(maneuverDirectionClass_, "UNKNOWN", "Lit/smg/libs/aasdk/projection/INavigationStatusEvent$ManeuverDirection;");
     }
     jobject jManeuverDirection = env->GetStaticObjectField(maneuverDirectionClass_, maneuverDirectionID);
@@ -164,7 +182,13 @@ void JNavigationStatusEvent::navigationDistanceEvent(const aasdk::proto::message
     jfieldID distanceUnitID = NULL;
     if (distanceEvent.has_distanceunit()){
         std::string distanceUnit = aasdk::proto::enums::DistanceUnit_Enum_Name(distanceEvent.distanceunit());
-        distanceUnitID = env->GetStaticFieldID(distanceUnitClass_, distanceUnit.c_str(), "Lit/smg/libs/aasdk/projection/INavigationStatusEvent$DistanceUnit;");
+        if (!distanceUnit.empty()) {
+            distanceUnitID = env->GetStaticFieldID(distanceUnitClass_, distanceUnit.c_str(), "Lit/smg/libs/aasdk/projection/INavigationStatusEvent$DistanceUnit;");
+            if (env->ExceptionCheck()) {
+                env->ExceptionClear();
+                distanceUnitID = NULL;
+            }
+        }
     }
     if (distanceUnitID == NULL){
         distanceUnitID = env->GetStaticFieldID(distanceUnitClass_, "UNKNOWN", "Lit/smg/libs/aasdk/projection/INavigationStatusEvent$DistanceUnit;");

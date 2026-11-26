@@ -53,7 +53,7 @@ public class MediaStatusEvent extends it.smg.libs.aasdk.projection.MediaStatusEv
 
         metadataUpdateEvent_ = metadataUpdateEvent;
 
-        if (!PlayerActivity.isActive()){
+        if (playbackUpdateEvent_ != null && !PlayerActivity.isActive()){
             notificationFactory_.notifyMediaMetadataUpdate(playbackUpdateEvent_, metadataUpdateEvent);
         }
     }

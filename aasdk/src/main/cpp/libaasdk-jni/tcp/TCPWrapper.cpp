@@ -39,8 +39,11 @@ void TCPWrapper::asyncConnect(boost::asio::ip::tcp::socket& socket, const std::s
 boost::system::error_code TCPWrapper::connect(boost::asio::ip::tcp::socket& socket, const std::string& hostname, uint16_t port)
 {
     boost::system::error_code ec;
-    socket.set_option(boost::asio::ip::tcp::no_delay(true), ec);
     socket.connect(boost::asio::ip::tcp::endpoint(boost::asio::ip::address::from_string(hostname), port), ec);
+    if (!ec) {
+        boost::system::error_code optEc;
+        socket.set_option(boost::asio::ip::tcp::no_delay(true), optEc);
+    }
     return ec;
 }
 

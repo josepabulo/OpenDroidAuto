@@ -30,10 +30,11 @@ void MessageOutStream::stream(Message::Pointer message, SendPromise::Pointer pro
     strand_->dispatch([this, self = this->shared_from_this(), message = std::move(message), promise = std::move(promise)]() mutable {
         if (Log::isVerbose()) Log_v("%s / sending message %s", channelIdToString(message->getChannelId()).c_str(), message->toString().c_str());
 
-        if(message->getPayload().size() >= cMaxFramePayloadSize)
+        const auto payloadSize = message->getPayload().size();
+        if(payloadSize >= cMaxFramePayloadSize)
         {
             if (Log::isVerbose()) Log_v("%s / split message", channelIdToString(message->getChannelId()).c_str());
-            this->streamSplittedMessage(std::move(message), 0, message->getPayload().size(), std::move(promise));
+            this->streamSplittedMessage(std::move(message), 0, payloadSize, std::move(promise));
         }
         else
         {
@@ -80,10 +81,10 @@ void MessageOutStream::streamSplittedMessage(Message::Pointer message, int offse
         }
         else
         {
-            transportPromise->then([this, self = this->shared_from_this(), offset = offset, remainingSize = remainingSize, size, message = std::move(message), promise = std::move(promise)]() mutable {
-               this->streamSplittedMessage(message, offset+size, remainingSize-size, promise);
+            transportPromise->then([this, self = this->shared_from_this(), offset = offset, remainingSize = remainingSize, size, message = std::move(message), promise]() mutable {
+               this->streamSplittedMessage(std::move(message), offset+size, remainingSize-size, std::move(promise));
            },
-           [this, self = this->shared_from_this(), promise = std::move(promise)](const error::Error& e) mutable {
+           [this, self = this->shared_from_this(), promise](const error::Error& e) mutable {
                this->reset();
                promise->reject(e);
                promise.reset();

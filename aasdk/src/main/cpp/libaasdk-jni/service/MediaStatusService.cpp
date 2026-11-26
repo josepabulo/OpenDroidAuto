@@ -7,6 +7,7 @@ namespace service
     MediaStatusService::MediaStatusService(aasdk::io::ioService& ioService, aasdk::messenger::IMessenger::Pointer messenger, projection::IMediaStatusEvent::Pointer mediaEvent, IServiceEventHandler::Pointer serviceEventHandler)
             : strand_(ioService)
             , channel_(std::make_shared<aasdk::channel::av::MediaStatusServiceChannel>(strand_, std::move(messenger)))
+            , serviceEventHandler_(std::move(serviceEventHandler))
             , isRunning_(false)
     {
         this->mediaEvent_ = mediaEvent;
@@ -68,7 +69,9 @@ namespace service
             return;
         }
 //        Log_e("channel error: %s", e.what());
-        serviceEventHandler_->onError(e);
+        if (serviceEventHandler_ != nullptr) {
+            serviceEventHandler_->onError(e);
+        }
     }
 
     void MediaStatusService::onMetadataUpdate(const aasdk::proto::messages::MediaInfoChannelMetadataData& metadata)
