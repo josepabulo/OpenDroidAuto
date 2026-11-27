@@ -2,6 +2,8 @@ package it.smg.libs.aasdk.usb;
 
 import androidx.annotation.Keep;
 
+import it.smg.libs.common.Log;
+
 public class AOAPDevice {
 
     private static final String TAG = "AOAPDevice";
@@ -20,6 +22,11 @@ public class AOAPDevice {
 
     public void delete(){
         nativeDelete();
+        try {
+            usbDevice_.reset();
+        } catch (Throwable error) {
+            Log.w(TAG, "Error resetting AOAP USB device during delete: " + error);
+        }
         usbDevice_.close();
     }
 

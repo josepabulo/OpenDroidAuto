@@ -22,15 +22,6 @@ SSLWrapper::SSLWrapper()
 SSLWrapper::~SSLWrapper()
 {
     if (Log::isVerbose()) Log_v("destructor");
-    FIPS_mode_set(0);
-//    ENGINE_cleanup();  // Compiled without engine
-    CONF_modules_unload(1);
-    EVP_cleanup();
-    CRYPTO_cleanup_all_ex_data();
-#if (OPENSSL_VERSION_NUMBER < 0x10100000L)
-    ERR_remove_state(0);
-#endif
-    ERR_free_strings();
 }
 
 X509* SSLWrapper::readCertificate(const std::string& certificate)
@@ -109,13 +100,13 @@ void SSLWrapper::setConnectState(SSL* ssl)
 
 int SSLWrapper::doHandshake(SSL* ssl)
 {
+    ERR_clear_error();
     auto result = SSL_do_handshake(ssl);
-    auto errorCode = SSL_get_error(ssl, result);
-
-    return errorCode;
+    return getError(ssl, result);
 }
 
 int SSLWrapper::shutdown(SSL* ssl){
+    ERR_clear_error();
     return SSL_shutdown(ssl);
 }
 
@@ -166,11 +157,13 @@ int SSLWrapper::getAvailableBytes(const SSL* ssl)
 
 int SSLWrapper::sslRead(SSL *ssl, void *buf, int num)
 {
+    ERR_clear_error();
     return SSL_read(ssl, buf, num);
 }
 
 int SSLWrapper::sslWrite(SSL *ssl, const void *buf, int num)
 {
+    ERR_clear_error();
     return SSL_write(ssl, buf, num);
 }
 

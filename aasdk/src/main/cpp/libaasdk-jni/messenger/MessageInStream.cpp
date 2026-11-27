@@ -122,6 +122,13 @@ void MessageInStream::receiveFramePayloadHandler(const common::DataConstBuffer& 
     if (Log::isVerbose() && Log::logProtocol()) Log_v("%s/receiveFramePayloadHandler %s", channelIdToString(message_->getChannelId()).c_str(), common::dump(buffer).c_str());
 
     if (message_->getEncryptionType() == EncryptionType::ENCRYPTED) {
+        if (!cryptor_->isActive()) {
+            Log_e("%s / encrypted frame received before TLS handshake (stale session)", channelIdToString(message_->getChannelId()).c_str());
+            message_.reset();
+            promise_->reject(error::Error(error::ErrorCode::SSL_NOT_ACTIVE));
+            promise_.reset();
+            return;
+        }
         try {
             if (Log::isVerbose()) Log_v("%s / frame encrypted", channelIdToString(message_->getChannelId()).c_str());
             cryptor_->decrypt(message_->getPayload(), buffer);

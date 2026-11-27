@@ -63,6 +63,7 @@ public class USBManager {
     private int recoveryOperationId_;
     private boolean recoveryInProgress_;
     private int recoveryDeviceId_ = -1;
+    private final UsbSessionTracker sessionTracker_ = new UsbSessionTracker();
     private final LocalBroadcastManager localBroadcastManager_;
 
     private static USBManager instance_;
@@ -106,16 +107,21 @@ public class USBManager {
         if (device == null) {
             return;
         }
+        boolean isAoap = checkAOAPDevice(device);
+        long now = SystemClock.elapsedRealtime();
         synchronized (deviceLock_) {
             if (recoveryInProgress_ || aoapSwitching_) {
+                return;
+            }
+            if (sessionTracker_.isTransientResetAoap(device.getDeviceId(), isAoap, now)) {
+                if (Log.isInfo()) Log.i(TAG, "Ignoring transient reset AOAP device " + device.getDeviceId());
                 return;
             }
         }
         if (isUsbErrorActive()) {
             // Preserve the visible error and RECUPERAR USB action until the user
             // explicitly triggers recovery or physically unplugs the cable.
-            if (UsbAccessoryIds.isAoap(device.getVendorId(), device.getProductId())
-                    || UsbAccessoryIds.maybeSupportsAoap(device)) {
+            if (isAoap || UsbAccessoryIds.maybeSupportsAoap(device)) {
                 synchronized (deviceLock_) {
                     lastDevice_ = device;
                 }
@@ -126,8 +132,7 @@ public class USBManager {
             handleUsbAttached(device);
             return;
         }
-        if (!UsbAccessoryIds.isAoap(device.getVendorId(), device.getProductId())
-                && !UsbAccessoryIds.maybeSupportsAoap(device)) {
+        if (!isAoap && !UsbAccessoryIds.maybeSupportsAoap(device)) {
             return;
         }
         synchronized (deviceLock_) {
@@ -160,6 +165,21 @@ public class USBManager {
         }
 
         if (aoapDevice) {
+            boolean alreadyAttached;
+            boolean fresh;
+            synchronized (deviceLock_) {
+                alreadyAttached = attachedDeviceId_ == device.getDeviceId() && usbDevice_ != null;
+                fresh = sessionTracker_.isFreshAoap(device.getDeviceId());
+            }
+            if (alreadyAttached) {
+                return;
+            }
+            if (!fresh) {
+                // AOAP inherited from a killed/previous process still holds the old TLS session.
+                if (Log.isInfo()) Log.i(TAG, "Inherited AOAP device " + device.getDeviceId() + "; recovering to clear stale session");
+                recoverConnection();
+                return;
+            }
             attachAoapDevice(device);
             return;
         }
@@ -204,6 +224,8 @@ public class USBManager {
             return;
         }
 
+        boolean isAoap = checkAOAPDevice(device);
+        long now = SystemClock.elapsedRealtime();
         boolean expectedAoapReenumeration = false;
         boolean activeDeviceDetached = false;
         synchronized (deviceLock_) {
@@ -223,10 +245,17 @@ public class USBManager {
                 if (lastDevice_ != null && lastDevice_.getDeviceId() == deviceId) {
                     lastDevice_ = null;
                 }
+            } else if (sessionTracker_.isExpectedResetDetach(deviceId, isAoap, now)) {
+                expectedAoapReenumeration = true;
+                if (lastDevice_ != null && lastDevice_.getDeviceId() == deviceId) {
+                    lastDevice_ = null;
+                }
             } else if (attachedDeviceId_ == deviceId
                     || (lastDevice_ != null && lastDevice_.getDeviceId() == deviceId)) {
                 invalidateAoapOperationLocked();
                 invalidateRecoveryOperationLocked();
+                sessionTracker_.clearFreshAoap();
+                sessionTracker_.clearResetWindow();
                 closeUsbDeviceLocked();
                 lastDevice_ = null;
                 activeDeviceDetached = true;
@@ -290,6 +319,8 @@ public class USBManager {
 
     private void negotiateAoap(int operationId, int sourceDeviceId) {
         try {
+            // Brief settle avoids UsbHostManager contention with native MirrorLink probes right after MTP attach.
+            SystemClock.sleep(UsbRetryPolicy.MTP_SETTLE_MS);
             for (int attempt = 0; attempt < UsbRetryPolicy.NEGOTIATION_ATTEMPTS; attempt++) {
                 if (!isAoapOperationCurrent(operationId)) {
                     return;
@@ -299,6 +330,9 @@ public class USBManager {
                     break;
                 }
                 if (checkAOAPDevice(device)) {
+                    synchronized (deviceLock_) {
+                        sessionTracker_.markAoapFresh(device.getDeviceId());
+                    }
                     mainHandler_.post(() -> handleUsbAttached(device));
                     return;
                 }
@@ -336,6 +370,7 @@ public class USBManager {
                 if (!isAoapOperationCurrentLocked(operationId)) {
                     return;
                 }
+                sessionTracker_.markAoapFresh(accessory.getDeviceId());
                 invalidateAoapOperationLocked();
             }
             handleUsbAttached(accessory);
@@ -480,15 +515,15 @@ public class USBManager {
         }
     }
 
-    /** Resets a session after its transfers have stopped but before it is deleted. */
-    public void resetSession(LibUsbDevice sessionDevice) {
-        if (sessionDevice == null) {
+    /** Records the imminent bus reset triggered by AOAP teardown so expected detach events are ignored. */
+    public void beginSessionReset(LibUsbDevice sessionDevice) {
+        if (sessionDevice == null || sessionDevice.originalDevice() == null) {
             return;
         }
-        try {
-            sessionDevice.reset();
-        } catch (Throwable error) {
-            Log.e(TAG, "Error resetting completed USB session", error);
+        long now = SystemClock.elapsedRealtime();
+        synchronized (deviceLock_) {
+            sessionTracker_.beginSessionReset(sessionDevice.originalDevice().getDeviceId(),
+                    now, UsbRetryPolicy.SESSION_RESET_WINDOW_MS);
         }
     }
 
@@ -497,13 +532,19 @@ public class USBManager {
      * after Android has processed a possible reset-driven re-enumeration.
      */
     public void finishSession(LibUsbDevice sessionDevice) {
-        finishSession(sessionDevice, false);
+        finishSession(sessionDevice, false, false);
     }
 
     public void finishSession(LibUsbDevice sessionDevice, boolean keepErrorState) {
+        finishSession(sessionDevice, keepErrorState, false);
+    }
+
+    public void finishSession(LibUsbDevice sessionDevice, boolean keepErrorState, boolean autoRecover) {
         if (sessionDevice == null) {
             return;
         }
+        int oldDeviceId = sessionDevice.originalDevice() != null
+                ? sessionDevice.originalDevice().getDeviceId() : -1;
         synchronized (deviceLock_) {
             if (usbDevice_ == sessionDevice) {
                 closeUsbDeviceLocked();
@@ -513,10 +554,39 @@ public class USBManager {
                 pendingPermissionDeviceId_ = -1;
             }
         }
-        if (!keepErrorState) {
-            mainHandler_.postDelayed(this::rescanAttachedDevices, 750L);
-            mainHandler_.postDelayed(this::rescanAttachedDevices, 1500L);
+        if (autoRecover) {
+            recoverAfterReset(oldDeviceId);
+            return;
         }
+        if (!keepErrorState) {
+            mainHandler_.postDelayed(this::rescanAttachedDevices, 1500L);
+            mainHandler_.postDelayed(this::rescanAttachedDevices, 3000L);
+        }
+    }
+
+    private synchronized void recoverAfterReset(int excludedDeviceId) {
+        if (Log.isInfo()) Log.i(TAG, "recoverAfterReset excludedDeviceId=" + excludedDeviceId);
+        ConnectionManager.instance().switchingToAoap(ctx_.getString(R.string.connection_usb_preparing));
+        final int operationId;
+        synchronized (deviceLock_) {
+            invalidateAoapOperationLocked();
+            invalidateRecoveryOperationLocked();
+            closeUsbDeviceLocked();
+            pendingPermissionDeviceId_ = -1;
+            recoveryInProgress_ = true;
+            recoveryDeviceId_ = excludedDeviceId;
+            operationId = recoveryOperationId_;
+        }
+
+        usbExecutor_.execute(() -> {
+            try {
+                pollPostResetRecovery(operationId, excludedDeviceId);
+            } catch (Throwable error) {
+                Log.e(TAG, "USB post-reset recovery failed", error);
+                postIfRecoveryCurrent(operationId, () -> ConnectionManager.instance().failed("modeUSB",
+                        ctx_.getString(R.string.connection_usb_unavailable)));
+            }
+        });
     }
 
     public synchronized boolean recoverConnection() {
@@ -569,7 +639,7 @@ public class USBManager {
                 if (usbManager_.hasPermission(device)) {
                     if (isAoap && permittedAoap == null) {
                         permittedAoap = device;
-                    } else if (permittedCandidate == null) {
+                    } else if (!isAoap && permittedCandidate == null) {
                         permittedCandidate = device;
                     }
                 } else if (unpermittedCandidate == null) {
@@ -584,6 +654,8 @@ public class USBManager {
                     }
                     recoveryDeviceId_ = permittedAoap.getDeviceId();
                     lastDevice_ = permittedAoap;
+                    sessionTracker_.beginSessionReset(permittedAoap.getDeviceId(),
+                            SystemClock.elapsedRealtime(), UsbRetryPolicy.SESSION_RESET_WINDOW_MS);
                 }
                 // Reset the USB bus with no claimed interface so the phone drops any wedged
                 // accessory state without forcing the user to physically unplug the cable.
@@ -603,29 +675,13 @@ public class USBManager {
                     }
                 }
 
-                for (int poll = 0; poll < UsbRetryPolicy.REENUMERATION_ATTEMPTS; poll++) {
-                    SystemClock.sleep(UsbRetryPolicy.reenumerationDelayMs(poll));
-                    if (!isRecoveryOperationCurrent(operationId)) {
-                        return;
-                    }
-
-                    UsbDevice postResetAoap = findPermittedAoapDevice();
-                    if (postResetAoap != null) {
-                        postIfRecoveryCurrent(operationId, () -> attachAoapDevice(postResetAoap));
-                        return;
-                    }
-                    for (UsbDevice device : attachedDevices()) {
-                        if (UsbAccessoryIds.isAoap(device.getVendorId(), device.getProductId())
-                                || UsbAccessoryIds.maybeSupportsAoap(device)) {
-                            UsbDevice target = device;
-                            postIfRecoveryCurrent(operationId, usbManager_.hasPermission(target)
-                                    ? () -> handleUsbAttached(target)
-                                    : () -> requestPermission(target));
-                            return;
-                        }
-                    }
-                }
+                pollPostResetRecovery(operationId, permittedAoap.getDeviceId());
+                return;
             } else if (permittedCandidate != null) {
+                SystemClock.sleep(UsbRetryPolicy.MTP_SETTLE_MS);
+                if (!isRecoveryOperationCurrent(operationId)) {
+                    return;
+                }
                 UsbDevice target = permittedCandidate;
                 postIfRecoveryCurrent(operationId, () -> handleUsbAttached(target));
                 return;
@@ -635,13 +691,83 @@ public class USBManager {
                 return;
             }
 
-            postIfRecoveryCurrent(operationId, () -> ConnectionManager.instance().failed("modeUSB",
-                    ctx_.getString(R.string.connection_usb_unavailable)));
+            // Device may be mid-reenumeration right after a reset; poll before failing.
+            pollPostResetRecovery(operationId, -1);
         } catch (Throwable error) {
             Log.e(TAG, "USB recovery failed", error);
             postIfRecoveryCurrent(operationId, () -> ConnectionManager.instance().failed("modeUSB",
                     ctx_.getString(R.string.connection_usb_unavailable)));
         }
+    }
+
+    private void pollPostResetRecovery(final int operationId, final int excludedDeviceId) {
+        for (int poll = 0; poll < UsbRetryPolicy.REENUMERATION_ATTEMPTS; poll++) {
+            SystemClock.sleep(UsbRetryPolicy.reenumerationDelayMs(poll));
+            if (!isRecoveryOperationCurrent(operationId)) {
+                return;
+            }
+
+            for (UsbDevice device : attachedDevices()) {
+                if (!checkAOAPDevice(device) && UsbAccessoryIds.maybeSupportsAoap(device)) {
+                    SystemClock.sleep(UsbRetryPolicy.MTP_SETTLE_MS);
+                    if (!isRecoveryOperationCurrent(operationId)) {
+                        return;
+                    }
+                    UsbDevice settledTarget = findDeviceById(device.getDeviceId());
+                    if (settledTarget == null) {
+                        break;
+                    }
+                    postIfRecoveryCurrent(operationId, usbManager_.hasPermission(settledTarget)
+                            ? () -> handleUsbAttached(settledTarget)
+                            : () -> requestPermission(settledTarget));
+                    return;
+                }
+            }
+
+            UsbDevice postResetAoap = findPermittedAoapDevice();
+            if (postResetAoap != null) {
+                if (excludedDeviceId != -1 && postResetAoap.getDeviceId() == excludedDeviceId && poll < 3) {
+                    continue;
+                }
+                // Wait briefly so 110ms transient AOAP nodes disappear before we attach.
+                SystemClock.sleep(UsbRetryPolicy.POST_RESET_AOAP_STABILITY_MS);
+                if (!isRecoveryOperationCurrent(operationId)) {
+                    return;
+                }
+                UsbDevice stableAoap = findDeviceById(postResetAoap.getDeviceId());
+                if (stableAoap == null || !checkAOAPDevice(stableAoap)) {
+                    if (Log.isInfo()) Log.i(TAG, "Ignoring transient AOAP device during recovery; continuing poll");
+                    continue;
+                }
+                UsbDeviceConnection probeConnection = usbManager_.openDevice(stableAoap);
+                if (probeConnection == null) {
+                    if (Log.isInfo()) Log.i(TAG, "AOAP candidate not yet usable during recovery; continuing poll");
+                    continue;
+                }
+                probeConnection.close();
+                synchronized (deviceLock_) {
+                    sessionTracker_.markAoapFresh(stableAoap.getDeviceId());
+                }
+                postIfRecoveryCurrent(operationId, () -> attachAoapDevice(stableAoap));
+                return;
+            }
+
+            UsbDevice unpermittedAoap = findAoapDevice();
+            if (unpermittedAoap != null) {
+                SystemClock.sleep(UsbRetryPolicy.POST_RESET_AOAP_STABILITY_MS);
+                if (!isRecoveryOperationCurrent(operationId)) {
+                    return;
+                }
+                UsbDevice stableUnpermitted = findDeviceById(unpermittedAoap.getDeviceId());
+                if (stableUnpermitted != null && checkAOAPDevice(stableUnpermitted)) {
+                    postIfRecoveryCurrent(operationId, () -> requestPermission(stableUnpermitted));
+                    return;
+                }
+            }
+        }
+
+        postIfRecoveryCurrent(operationId, () -> ConnectionManager.instance().failed("modeUSB",
+                ctx_.getString(R.string.connection_usb_unavailable)));
     }
 
     public LibUsbDevice aoapDevice(){

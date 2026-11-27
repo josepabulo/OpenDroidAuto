@@ -8,9 +8,13 @@ import org.junit.Test;
 public class UsbRetryPolicyTest {
     @Test
     public void negotiationRetriesAreShortAndBounded() {
-        assertEquals(3, UsbRetryPolicy.NEGOTIATION_ATTEMPTS);
+        assertEquals(4, UsbRetryPolicy.NEGOTIATION_ATTEMPTS);
         assertEquals(250L, UsbRetryPolicy.negotiationDelayMs(0));
-        assertEquals(600L, UsbRetryPolicy.negotiationDelayMs(1));
+        assertEquals(500L, UsbRetryPolicy.negotiationDelayMs(1));
+        assertEquals(800L, UsbRetryPolicy.negotiationDelayMs(2));
+        assertEquals(400L, UsbRetryPolicy.POST_RESET_AOAP_STABILITY_MS);
+        assertEquals(300L, UsbRetryPolicy.MTP_SETTLE_MS);
+        assertEquals(3000L, UsbRetryPolicy.SESSION_RESET_WINDOW_MS);
     }
 
     @Test

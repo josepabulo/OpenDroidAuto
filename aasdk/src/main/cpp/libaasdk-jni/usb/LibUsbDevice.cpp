@@ -153,7 +153,9 @@ int LibUsbDevice::resetDevice() {
     }
 
     int result = libusb_reset_device(handle_);
-    if (result < LIBUSB_SUCCESS) {
+    if (result == LIBUSB_ERROR_NOT_FOUND) {
+        if (Log::isInfo()) Log_i("libusb_reset_device triggered USB re-enumeration (%d / %s)", result, libusb_error_name(result));
+    } else if (result < LIBUSB_SUCCESS) {
         Log_e("libusb_reset_device failed:(%d / %s)", result, libusb_error_name(result));
     }
     return result;

@@ -62,7 +62,8 @@ enum class ErrorCode
     OPERATION_IN_PROGRESS = 31,
     PARSE_PAYLOAD = 32,
     TCP_TRANSFER = 33,
-    UNEXPECTED_ERROR = 34
+    UNEXPECTED_ERROR = 34,
+    SSL_NOT_ACTIVE = 35
 };
 
     inline std::string errorCodeToString(ErrorCode errorCode) {
@@ -137,6 +138,8 @@ enum class ErrorCode
                 return "TCP_TRANSFER";
             case ErrorCode::UNEXPECTED_ERROR:
                 return "UNEXPECTED_ERROR";
+            case ErrorCode::SSL_NOT_ACTIVE:
+                return "SSL_NOT_ACTIVE";
             default:
                 return "(unknown)";
         }

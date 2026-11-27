@@ -63,6 +63,7 @@ public class ODAService extends Service implements IAndroidAutoEntityEventHandle
     private volatile boolean stopRequested_;
     private volatile boolean shutdownRequested_;
     private volatile boolean errorQuit_;
+    private volatile boolean autoRecoverUsb_;
     private volatile String currentMode_;
 
     private final Runnable shutdownTimeout_ = new Runnable() {
@@ -115,6 +116,7 @@ public class ODAService extends Service implements IAndroidAutoEntityEventHandle
             stopRequested_ = false;
         }
         errorQuit_ = false;
+        autoRecoverUsb_ = false;
         ConnectionManager.instance().connecting(MODE_USB, getString(R.string.connection_usb_connecting));
         Thread startThread = new Thread(() -> {
             Looper.prepare();
@@ -147,8 +149,7 @@ public class ODAService extends Service implements IAndroidAutoEntityEventHandle
                             }
                             builtEntity = AndroidAutoEntityFactory.create(this, device, surfaceView, keyHolder);
                             if (stopRequested_ || stopping_.get()) {
-                                builtEntity.stop();
-                                builtEntity.delete();
+                                deleteEntityWithReset(builtEntity, device);
                                 resumeDeferredStop = true;
                                 return;
                             }
@@ -165,8 +166,7 @@ public class ODAService extends Service implements IAndroidAutoEntityEventHandle
                                 }
                             }
                             if (aborted) {
-                                builtEntity.stop();
-                                builtEntity.delete();
+                                deleteEntityWithReset(builtEntity, device);
                                 resumeDeferredStop = true;
                                 return;
                             }
@@ -192,8 +192,7 @@ public class ODAService extends Service implements IAndroidAutoEntityEventHandle
                                 }
                             }
                             if (owned) {
-                                try { builtEntity.stop(); } catch (Throwable ignored) {}
-                                try { builtEntity.delete(); } catch (Throwable ignored) {}
+                                deleteEntityWithReset(builtEntity, device);
                             }
                         } else if (openedDevice != null) {
                             try { openedDevice.close(); } catch (Throwable ignored) {}
@@ -235,6 +234,7 @@ public class ODAService extends Service implements IAndroidAutoEntityEventHandle
             stopRequested_ = false;
         }
         errorQuit_ = false;
+        autoRecoverUsb_ = false;
         ConnectionManager.instance().connecting(MODE_WIFI, getString(R.string.connection_wifi_connecting));
         Thread startThread = new Thread(() -> {
             Looper.prepare();
@@ -426,11 +426,11 @@ public class ODAService extends Service implements IAndroidAutoEntityEventHandle
                 if (Log.isInfo()) Log.i(TAG, "deferring stop cleanup while USB session startup is aborting");
                 return;
             }
+            boolean autoRecoverUsb = autoRecoverUsb_;
+            autoRecoverUsb_ = false;
             if (!wasRunning && entity == null) {
                 if (Log.isInfo()) Log.i(TAG, "service not running, already stopped?");
-                if (sessionUsbDevice != null) {
-                    usbManager_.finishSession(sessionUsbDevice, errorQuit_);
-                }
+                finishUsbSessionAfterStop(sessionUsbDevice, errorQuit_, autoRecoverUsb);
                 localBroadcastManager_.sendBroadcast(new Intent(ODAService.STOP_ACTION));
 //                stopService(new Intent(this, ODAService.class));
                 stopForeground(true);
@@ -457,25 +457,9 @@ public class ODAService extends Service implements IAndroidAutoEntityEventHandle
                 }
             }
 
-            if (entity != null) {
-                try {
-                    entity.stop();
-                } catch (Throwable t) {
-                    Log.e(TAG, "error stopping Android Auto entity", t);
-                }
-                if (sessionUsbDevice != null) {
-                    usbManager_.resetSession(sessionUsbDevice);
-                }
-                try {
-                    entity.delete();
-                } catch (Throwable t) {
-                    Log.e(TAG, "error deleting Android Auto entity", t);
-                }
-            }
+            deleteEntityWithReset(entity, sessionUsbDevice);
 
-            if (sessionUsbDevice != null) {
-                usbManager_.finishSession(sessionUsbDevice, errorQuit_);
-            }
+            finishUsbSessionAfterStop(sessionUsbDevice, errorQuit_, autoRecoverUsb);
 
             Intent stopIntent = new Intent(ODAService.STOP_ACTION);
             localBroadcastManager_.sendBroadcast(stopIntent);
@@ -493,10 +477,38 @@ public class ODAService extends Service implements IAndroidAutoEntityEventHandle
                 currentMode_ = null;
                 shutdownRequested_ = false;
                 errorQuit_ = false;
+                autoRecoverUsb_ = false;
             }
             stopping_.set(false);
         }
 
+    }
+
+    private void deleteEntityWithReset(AndroidAutoEntity entity, LibUsbDevice sessionUsbDevice) {
+        if (entity == null) {
+            return;
+        }
+        try {
+            entity.stop();
+        } catch (Throwable t) {
+            Log.e(TAG, "error stopping Android Auto entity", t);
+        }
+        if (sessionUsbDevice != null) {
+            usbManager_.beginSessionReset(sessionUsbDevice);
+        }
+        try {
+            entity.delete();
+        } catch (Throwable t) {
+            Log.e(TAG, "error deleting Android Auto entity", t);
+        }
+    }
+
+    private void finishUsbSessionAfterStop(LibUsbDevice sessionUsbDevice, boolean keepErrorState, boolean autoRecover) {
+        if (sessionUsbDevice != null) {
+            usbManager_.finishSession(sessionUsbDevice, keepErrorState, autoRecover);
+        } else if (autoRecover && MODE_USB.equals(currentMode_)) {
+            usbManager_.recoverConnection();
+        }
     }
 
     @Override
@@ -551,6 +563,13 @@ public class ODAService extends Service implements IAndroidAutoEntityEventHandle
             if (shutdownRequested_) {
                 if (Log.isInfo()) Log.i(TAG, "transport closed while graceful shutdown was pending");
                 ConnectionManager.instance().userExited(getString(R.string.connection_user_stopped));
+                stop();
+                return;
+            }
+            if ("SSL_NOT_ACTIVE".equals(error) && MODE_USB.equals(currentMode_)) {
+                if (Log.isWarn()) Log.w(TAG, "stale USB AOAP session detected before TLS handshake; recovering USB automatically");
+                autoRecoverUsb_ = true;
+                errorQuit_ = false;
                 stop();
                 return;
             }

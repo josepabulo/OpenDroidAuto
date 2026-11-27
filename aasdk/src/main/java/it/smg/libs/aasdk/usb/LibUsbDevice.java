@@ -113,7 +113,8 @@ public final class LibUsbDevice {
         }
         int code = nativeResetDevice();
         if (Log.isInfo()) Log.i(TAG, "device reset completed with code " + code);
-        return code == LibUsb.SUCCESS;
+        // Linux returns LIBUSB_ERROR_NOT_FOUND when a bus reset triggers USB re-enumeration.
+        return code == LibUsb.SUCCESS || code == LibUsb.ERROR_NOT_FOUND;
     }
 
     public UsbDevice originalDevice(){
